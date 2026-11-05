@@ -45,15 +45,66 @@ struct VisInput {
 
 class Visuals {
 public:
-  enum Mode { COPPER, GLENZ, PLASMA, COUNT };
+  enum Mode { COPPER, GLENZ, PLASMA, DANCER, COUNT };
   static const char *name(int m) {
-    static const char *n[COUNT] = {"COPPER BARS", "GLENZ VECTORS", "PLASMA"};
+    static const char *n[COUNT] = {"COPPER BARS", "GLENZ VECTORS", "PLASMA", "DANCER"};
     return n[m % COUNT];
   }
 
-  // One frame: dt in seconds since the last
+  // One frame of a full-screen visual: dt in seconds since the last
   void draw(uint32_t *frame, int mode, const VisInput &in, const VisFont &font, float dt) {
     fb = frame;
+    follow(in, dt);
+    switch (mode % COUNT) {
+    case COPPER: copper(in, font, dt); break;
+    case GLENZ: glenz(in, dt); break;
+    case DANCER: dancer(in, dt); break;
+    default: plasma(in, dt); break;
+    }
+    overlay(mode, in, font);
+  }
+
+  // The channel bars, see-through, over whatever is on the TV already (the
+  // player's own screen): one bar per channel rising from the bottom, the
+  // whole height at full level, LED segments, a peak that falls slowly
+  void drawBars(uint32_t *frame, const VisInput &in, float dt) {
+    fb = frame;
+    follow(in, dt);
+    int n = in.channels < 1 ? 1 : in.channels > 8 ? 8 : in.channels;
+    const int gap = 24, seg = 26, segGap = 8, top = 40, bottom = H - 8;
+    int bw = (W - gap * (n + 1)) / n;
+    for (int c = 0; c < n; c++) {
+      float l = lvl[c] > kick[c] * 0.9f ? lvl[c] : kick[c] * 0.9f;
+      if (l > peak[c]) peak[c] = l, peakHold[c] = 0.5f;
+      else if ((peakHold[c] -= dt) < 0) peak[c] -= dt * 0.35f;
+      if (peak[c] < 0) peak[c] = 0;
+      int x0 = gap + c * (bw + gap);
+      int segs = (bottom - top) / (seg + segGap);
+      int lit = (int)(l * segs + 0.5f), pk = (int)(peak[c] * segs);
+      for (int k = 0; k < segs; k++) {
+        int y1 = bottom - k * (seg + segGap), y0 = y1 - seg;
+        float f = (float)k / segs; // green at the bottom, yellow, then red
+        int r = f < 0.5f ? (int)(510 * f) : 255, g = f < 0.5f ? 220 : (int)(220 * (1 - f) * 2), b = 40;
+        int a = k < lit ? 92 : (k == pk && pk > 0 ? 170 : 12); // (see-through: the player shows behind)
+        if (k == pk && pk > 0) r = g = b = 255;
+        for (int y = y0; y < y1; y++) {
+          if (y < 0 || y >= H) continue;
+          uint32_t *p = fb + y * W + x0;
+          for (int x = 0; x < bw; x++) mix(p + x, r, g, b, a);
+        }
+      }
+      // a glow on the top of the bar
+      if (lit > 0) {
+        int r, g, b;
+        hue(0.33f - 0.33f * l, 1, r, g, b);
+        glow(x0 + bw / 2.0f, bottom - lit * (seg + segGap), bw * 0.32f, r, g, b, 0.18f + 0.3f * kick[c]);
+      }
+    }
+  }
+
+private:
+  // the music's energy, smoothed: a quick rise, a slower fall; new notes as kicks
+  void follow(const VisInput &in, float dt) {
     if (dt > 0.1f) dt = 0.1f;
     t += dt;
     // the music's energy, smoothed: a quick rise, a slower fall
@@ -70,20 +121,12 @@ public:
     beat = 0;
     for (int c = 0; c < in.channels && c < 8; c++) beat = beat > kick[c] ? beat : kick[c];
     if (in.paused) energy *= 0.5f, beat = 0;
-
-    switch (mode % COUNT) {
-    case COPPER: copper(in, font, dt); break;
-    case GLENZ: glenz(in, dt); break;
-    default: plasma(in, dt); break;
-    }
-    overlay(mode, in, font);
   }
 
-private:
   static const int W = 1920, H = 1080;
   uint32_t *fb = nullptr;
   float t = 0, energy = 0, beat = 0, scroll = 0, warp = 0;
-  float lvl[8] = {}, kick[8] = {};
+  float lvl[8] = {}, kick[8] = {}, peak[8] = {}, peakHold[8] = {};
   float angA = 0, angB = 0, angC = 0;
 
   // ---------------------------------------------------------------- colours
@@ -201,14 +244,26 @@ private:
   // ---------------------------------------------------------------- COPPER BARS
   void copper(const VisInput &in, const VisFont &font, float dt) {
     const int water = 820; // the water line
-    // the sky: deep blue at the top, purple at the horizon
-    for (int y = 0; y < water; y++) {
-      float k = (float)y / water;
+    sky(water);
+    stars(water);
+    bars(in, water, 400, 330, 1.0f);
+    scroller(in, font, dt);
+    reflect(water);
+  }
+
+  // the sky: deep blue at the top, purple at the horizon (y = bottom)
+  void sky(int bottom) {
+    for (int y = 0; y < bottom; y++) {
+      float k = (float)y / bottom;
       uint32_t c = rgb((int)(10 + 40 * k), (int)(6 + 10 * k), (int)(30 + 50 * k));
       uint32_t *p = fb + y * W;
       for (int x = 0; x < W; x++) p[x] = c;
     }
-    // stars drifting left, three layers
+  }
+
+  // stars drifting left, three layers, above y = bottom
+  void stars(int bottom) {
+    const int water = bottom;
     for (int i = 0; i < 260; i++) {
       uint32_t h = (uint32_t)(i + 7) * 2654435761u;
       int layer = i % 3;
@@ -220,12 +275,16 @@ private:
       add((int)x, y, v, v, v + 20);
       if (layer == 2) add((int)x + 1, y, v / 2, v / 2, v / 2);
     }
-    // the bars, back to front: each channel's colour, a chrome gradient
+  }
+
+  // the copper bars, back to front: each channel's colour, a chrome gradient,
+  // swinging round mid by up to amp, above y = water; bright: 0..1
+  void bars(const VisInput &in, int water, float mid, float amp, float bright) {
     const int nb = 9; // (each channel's colour, round and round)
     for (int i = 0; i < nb; i++) {
       int c = i % (in.channels > 0 ? in.channels : 1);
       float l = lvl[c], k = kick[c];
-      float y = 400 + 330 * sinf(t * 1.1f + i * 0.71f) * cosf(t * 0.37f + i * 0.29f);
+      float y = mid + amp * sinf(t * 1.1f + i * 0.71f) * cosf(t * 0.37f + i * 0.29f);
       float half = 22 + 26 * l + 18 * k;
       int r, g, b;
       hue(0.62f + i * 0.11f + in.pitch[c] * 0.25f, 1.0f, r, g, b);
@@ -235,12 +294,16 @@ private:
         float u = (float)dy / half;               // -1..1
         float sh = 0.25f + 0.75f * cosf(u * 1.5708f);
         float spec = expf(-(u + 0.35f) * (u + 0.35f) * 40.0f) * (0.6f + 0.4f * k); // a bright highlight
-        uint32_t col = rgb((int)(r * sh + 255 * spec), (int)(g * sh + 255 * spec), (int)(b * sh + 255 * spec));
+        uint32_t col = rgb((int)((r * sh + 255 * spec) * bright), (int)((g * sh + 255 * spec) * bright),
+                           (int)((b * sh + 255 * spec) * bright));
         uint32_t *p = fb + yy * W;
         for (int x = 0; x < W; x++) p[x] = col;
       }
     }
-    // the scroller: the tune's name, each letter on a sine, a rainbow running through
+  }
+
+  // the scroller: the tune's name, each letter on a sine, a rainbow running through
+  void scroller(const VisInput &in, const VisFont &font, float dt) {
     char msg[400];
     snprintf2(msg, sizeof(msg), in);
     int scale = font.h >= 16 ? 5 : 8, cw = font.w * scale, ch = font.h * scale;
@@ -257,7 +320,10 @@ private:
       font.glyph(fb, (int)x + 6, (int)y + 6, msg[i], scale, rgb(0, 0, 0)); // the shadow
       font.glyph(fb, (int)x, (int)y, msg[i], scale, rgb(r / 2 + 128, g / 2 + 128, b / 2 + 128));
     }
-    // the water: the picture above it, upside down, rippling and darker
+  }
+
+  // the water: the picture above it, upside down, rippling and darker
+  void reflect(int water) {
     for (int y = water; y < H; y++) {
       int dist = y - water;
       int src = water - 1 - dist * 3 / 2;
@@ -516,6 +582,248 @@ private:
       int r, g, b;
       hue(in.pitch[c] * 0.8f + 0.1f, 1, r, g, b);
       glow(x, H - 40 - 600 * (1 - kick[c]) * kick[c] * 2.5f, 40 + 80 * kick[c], r, g, b, kick[c]);
+    }
+  }
+
+  // ---------------------------------------------------------------- DANCER
+  // A vector dancer facing us on a disco floor, copper bars and stars behind.
+  // A small skeleton: each pose is a handful of angles (degrees); a dance move
+  // is two poses, swapped on every beat of the music (a new note on a loud
+  // channel), a new move every 8 beats.
+  struct Pose {
+    float hipX, air, lean, head; // hips sideways (px), off the floor (px), body tilt (+ = to our right), head tilt
+    float arm[2], elbow[2];      // [0] his right (our left), [1] his left: 0 down, 90 out, 180 up; elbow + = bends up/in
+    float leg[2], knee[2];       // 0 straight down, + = out; knee + = bends in
+  };
+  static Pose lerp(const Pose &a, const Pose &b, float k) {
+    Pose o;
+    const float *pa = &a.hipX, *pb = &b.hipX;
+    float *po = &o.hipX;
+    for (size_t i = 0; i < sizeof(Pose) / sizeof(float); i++) po[i] = pa[i] + (pb[i] - pa[i]) * k;
+    return o;
+  }
+  static const Pose &move(int m, int side) {
+    static const Pose moves[][2] = {
+        // the disco point
+        {{-30, 0, -8, -6, {150, 40}, {0, 110}, {14, 4}, {18, 0}}, {30, 0, 8, 6, {-15, 40}, {30, 110}, {4, 14}, {0, 18}}},
+        // waving arms
+        {{-10, 0, -10, -8, {150, 110}, {0, 40}, {10, 10}, {12, 12}}, {10, 0, 10, 8, {110, 150}, {40, 0}, {10, 10}, {12, 12}}},
+        // the robot
+        {{0, 0, 0, -12, {90, 90}, {90, 0}, {8, 8}, {0, 0}}, {0, 0, 0, 12, {90, 90}, {0, 90}, {8, 8}, {0, 0}}},
+        // star jumps
+        {{0, 60, 0, 0, {165, 165}, {0, 0}, {30, 30}, {0, 0}}, {0, 0, 0, 0, {25, 25}, {20, 20}, {5, 5}, {28, 28}}},
+        // side steps
+        {{-60, 0, -12, -8, {55, 25}, {70, 70}, {26, 4}, {0, 18}}, {60, 0, 12, 8, {25, 55}, {70, 70}, {4, 26}, {18, 0}}},
+        // hands in the air
+        {{0, 10, 0, 0, {170, 170}, {25, 25}, {12, 12}, {6, 6}}, {0, 0, 0, 0, {145, 145}, {75, 75}, {12, 12}, {22, 22}}},
+    };
+    return moves[m % 6][side & 1];
+  }
+
+  Pose dFrom = {}, dTo = {};
+  float dStepT = -9, dLastBeat = -9;
+  int dStep = 0;
+  bool dInit = false;
+
+  // a filled circle
+  void disc(float cx, float cy, float r, uint32_t c) {
+    int y0 = (int)(cy - r), y1 = (int)(cy + r);
+    for (int y = y0; y <= y1; y++) {
+      if (y < 0 || y >= H) continue;
+      float dy = y - cy, w = r * r - dy * dy;
+      if (w < 0) continue;
+      w = sqrtf(w);
+      int x0 = (int)(cx - w), x1 = (int)(cx + w);
+      if (x0 < 0) x0 = 0;
+      if (x1 > W - 1) x1 = W - 1;
+      uint32_t *p = fb + y * W;
+      for (int x = x0; x <= x1; x++) p[x] = c;
+    }
+  }
+  // a limb: a thick rounded line
+  void limb(float ax, float ay, float bx, float by, float w, uint32_t c) {
+    float dx = bx - ax, dy = by - ay, l = sqrtf(dx * dx + dy * dy) + 1e-4f;
+    float nx = -dy / l * w / 2, ny = dx / l * w / 2;
+    int r = (int)(c & 0xff), g = (int)((c >> 8) & 0xff), b = (int)((c >> 16) & 0xff);
+    tri(ax + nx, ay + ny, bx + nx, by + ny, bx - nx, by - ny, r, g, b, 256, false);
+    tri(ax + nx, ay + ny, bx - nx, by - ny, ax - nx, ay - ny, r, g, b, 256, false);
+    disc(ax, ay, w / 2, c);
+    disc(bx, by, w / 2, c);
+  }
+  static void rotv(float &x, float &y, float deg) {
+    float a = deg * 0.017453293f, c = cosf(a), s = sinf(a), nx = x * c - y * s, ny = x * s + y * c;
+    x = nx;
+    y = ny;
+  }
+
+  void dancer(const VisInput &in, float dt) {
+    (void)dt;
+    const int horizon = 700;
+    sky(horizon);
+    stars(horizon);
+    bars(in, horizon, 300, 230, 0.75f);
+
+    // the floor: tiles in perspective, some lit on the beat
+    for (int y = horizon; y < H; y++) {
+      float k = (float)(y - horizon) / (H - horizon);
+      uint32_t c = rgb((int)(14 + 20 * k), (int)(8 + 10 * k), (int)(30 + 30 * k));
+      uint32_t *p = fb + y * W;
+      for (int x = 0; x < W; x++) p[x] = c;
+    }
+    const float vx = W / 2;
+    for (int row = 0; row < 7; row++) {
+      // rows of tiles, nearer = taller (1/z)
+      float z0 = 1.0f + row * 0.55f, z1 = z0 + 0.55f;
+      float y0 = horizon + 380 / z1, y1 = horizon + 380 / z0;
+      for (int col = -6; col < 6; col++) {
+        uint32_t hsh = (uint32_t)((row * 13 + col * 7 + dStep * 31) * 2654435761u);
+        bool lit = (hsh >> 28) < 4;
+        if (!lit) continue;
+        int r, g, b;
+        hue((hsh >> 8 & 255) / 255.0f, 0.55f + 0.45f * beat, r, g, b);
+        float xa0 = vx + col * 520 / z1, xa1 = vx + (col + 1) * 520 / z1;
+        float xb0 = vx + col * 520 / z0, xb1 = vx + (col + 1) * 520 / z0;
+        tri(xa0, y0, xa1, y0, xb1, y1, r, g, b, 150, true);
+        tri(xa0, y0, xb1, y1, xb0, y1, r, g, b, 150, true);
+      }
+    }
+    for (int col = -6; col <= 6; col++) line(vx + col * 520 / 4.85f, horizon + 380 / 4.85f, vx + col * 520, horizon + 380, 2, 120, 90, 200);
+    for (int row = 0; row <= 7; row++) {
+      float z = 1.0f + row * 0.55f, y = horizon + 380 / z;
+      line(0, y, W, y, 2, 120, 90, 200);
+    }
+
+    // the dance: a step on each beat (a new note, loud enough; not too soon),
+    // or every 0.6 s when the music gives none
+    bool step = false;
+    for (int c = 0; c < in.channels && c < 8; c++)
+      if (in.hit[c] && lvl[c] > 0.2f && t - dLastBeat > 0.24f) step = true;
+    if (!in.paused && energy > 0.03f && t - dLastBeat > 0.6f) step = true;
+    if (!dInit) {
+      dFrom = dTo = move(0, 0);
+      dInit = true;
+    }
+    float k0 = (t - dStepT) / 0.16f;
+    if (k0 > 1) k0 = 1;
+    Pose now = lerp(dFrom, dTo, k0 * k0 * (3 - 2 * k0));
+    if (step) {
+      dLastBeat = t;
+      dStepT = t;
+      dStep++;
+      dFrom = now;
+      dTo = move(dStep / 8, dStep & 1);
+    }
+    if (in.paused || energy < 0.02f) { // the music stopped: standing, swaying
+      static const Pose idle = {0, 0, 0, 0, {12, 12}, {10, 10}, {6, 6}, {0, 0}};
+      now = lerp(now, idle, 0.5f);
+      now.lean += 4 * sinf(t * 1.5f);
+    }
+    // a dip just after each step, and a breathing bob
+    float dip = 22 * expf(-(t - dStepT) * 9.0f) + 6 * sinf(t * 4);
+
+    // ---- the skeleton (screen pixels; S: the size)
+    const float S = 2.5f, floorY = 1000;
+    const float torsoL = 120 * S, neckL = 16 * S, headR = 30 * S, shW = 50 * S, hipW = 30 * S;
+    const float upArm = 66 * S, foreArm = 62 * S, thigh = 84 * S, shin = 82 * S;
+    // the legs first, from a pelvis at 0,0, to find how high the pelvis stands
+    float hip[2][2], knee[2][2], foot[2][2];
+    float lowest = 0;
+    for (int sd = 0; sd < 2; sd++) {
+      float out = sd == 0 ? -1.0f : 1.0f;
+      hip[sd][0] = out * hipW;
+      hip[sd][1] = 0;
+      float tx = 0, ty = thigh;
+      rotv(tx, ty, -out * now.leg[sd]);
+      knee[sd][0] = hip[sd][0] + tx;
+      knee[sd][1] = hip[sd][1] + ty;
+      float sx = tx / thigh * shin, sy = ty / thigh * shin;
+      rotv(sx, sy, out * now.knee[sd]);
+      foot[sd][0] = knee[sd][0] + sx;
+      foot[sd][1] = knee[sd][1] + sy;
+      if (foot[sd][1] > lowest) lowest = foot[sd][1];
+    }
+    float px = W / 2 + now.hipX * S * 0.6f, py = floorY - lowest - now.air * S * 0.5f + dip * 0.6f;
+    for (int sd = 0; sd < 2; sd++) {
+      hip[sd][0] += px, hip[sd][1] += py;
+      knee[sd][0] += px, knee[sd][1] += py;
+      foot[sd][0] += px, foot[sd][1] += py;
+    }
+    // the body, tilted round the pelvis
+    float ux = 0, uy = -1;
+    rotv(ux, uy, now.lean);
+    float chestX = px + ux * torsoL, chestY = py + uy * torsoL;
+    float neckX = chestX + ux * neckL, neckY = chestY + uy * neckL;
+    float hx = ux, hy = uy;
+    rotv(hx, hy, now.head);
+    float headX = neckX + hx * headR, headY = neckY + hy * headR;
+    float sh[2][2], el[2][2], hd[2][2];
+    for (int sd = 0; sd < 2; sd++) {
+      float out = sd == 0 ? -1.0f : 1.0f;
+      float ox = -uy * out, oy = ux * out; // across the shoulders
+      sh[sd][0] = chestX + ox * shW - ux * 8 * S;
+      sh[sd][1] = chestY + oy * shW - uy * 8 * S;
+      float ax = 0, ay = upArm;
+      rotv(ax, ay, -out * now.arm[sd] + now.lean);
+      el[sd][0] = sh[sd][0] + ax;
+      el[sd][1] = sh[sd][1] + ay;
+      float fx = ax / upArm * foreArm, fy = ay / upArm * foreArm;
+      rotv(fx, fy, -out * now.elbow[sd]);
+      hd[sd][0] = el[sd][0] + fx;
+      hd[sd][1] = el[sd][1] + fy;
+    }
+
+    // ---- drawing: a shadow, then each part twice: a neon edge, a dark inside
+    for (int y = (int)floorY - 18; y < (int)floorY + 18; y++) {
+      float dy = (y - floorY) / 18.0f, w = (1 - dy * dy);
+      if (w <= 0 || y >= H) continue;
+      int half = (int)(150 * S * 0.6f * sqrtf(w) * (1 - now.air / 200));
+      uint32_t *p = fb + y * W;
+      for (int x = (int)px - half; x < (int)px + half; x++)
+        if (x >= 0 && x < W) mix(p + x, 0, 0, 0, 120);
+    }
+    int nr, ng, nb;
+    hue(0.52f + 0.25f * sinf(t * 0.2f) + (in.channels ? in.pitch[0] * 0.2f : 0), 1, nr, ng, nb);
+    uint32_t edge = rgb(nr / 2 + 120, ng / 2 + 120, nb / 2 + 120);
+    uint32_t body = rgb(nr / 6 + 10, ng / 6 + 8, nb / 6 + 20), bodyFar = rgb(nr / 9 + 6, ng / 9 + 5, nb / 9 + 14);
+    const float e = 7 * S;   // the edge's width
+    auto part = [&](float ax, float ay, float bx, float by, float w, bool far) {
+      limb(ax, ay, bx, by, w + e, edge);
+      limb(ax, ay, bx, by, w, far ? bodyFar : body);
+    };
+    // the far side first: his left leg and arm (both sides look the same from
+    // the front, so the order goes by which arm is raised less)
+    for (int sd = 0; sd < 2; sd++) {
+      part(hip[sd][0], hip[sd][1], knee[sd][0], knee[sd][1], 30 * S, false);
+      part(knee[sd][0], knee[sd][1], foot[sd][0], foot[sd][1], 25 * S, false);
+      float out = sd == 0 ? -1.0f : 1.0f;
+      part(foot[sd][0], foot[sd][1], foot[sd][0] + out * 22 * S, foot[sd][1] + 4 * S, 14 * S, false); // a shoe
+    }
+    // the torso: shoulders to hips, edge then inside
+    float t0x = sh[0][0], t0y = sh[0][1], t1x = sh[1][0], t1y = sh[1][1];
+    float b0x = px - hipW * 1.2f, b1x = px + hipW * 1.2f;
+    tri(t0x - e / 2, t0y - e / 2, t1x + e / 2, t1y - e / 2, b1x + e / 2, py + e / 2, (int)(edge & 255), (int)(edge >> 8 & 255), (int)(edge >> 16 & 255), 256, false);
+    tri(t0x - e / 2, t0y - e / 2, b1x + e / 2, py + e / 2, b0x - e / 2, py + e / 2, (int)(edge & 255), (int)(edge >> 8 & 255), (int)(edge >> 16 & 255), 256, false);
+    tri(t0x, t0y, t1x, t1y, b1x, py, (int)(body & 255), (int)(body >> 8 & 255), (int)(body >> 16 & 255), 256, false);
+    tri(t0x, t0y, b1x, py, b0x, py, (int)(body & 255), (int)(body >> 8 & 255), (int)(body >> 16 & 255), 256, false);
+    // a light on the chest, beating with the music
+    glow((t0x + t1x) / 2, (t0y + t1y) / 2 + 40 * S, (30 + 30 * beat) * S, nr, ng, nb, 0.5f + 0.5f * beat);
+    // the neck and head: a visor across it lit by the music
+    part(chestX, chestY, neckX, neckY, 18 * S, false);
+    disc(headX, headY, headR + e / 2, edge);
+    disc(headX, headY, headR, body);
+    {
+      float vx0 = -uy, vy0 = ux; // across the face
+      float cx = headX + hx * -4 * S, cy = headY + hy * -4 * S;
+      line(cx - vx0 * headR * 0.75f, cy - vy0 * headR * 0.75f, cx + vx0 * headR * 0.75f, cy + vy0 * headR * 0.75f,
+           9 * S, nr, ng, nb);
+      glow(cx, cy, headR * (1.2f + beat), nr, ng, nb, 0.3f + 0.5f * beat);
+    }
+    // the arms, in front
+    for (int sd = 0; sd < 2; sd++) {
+      part(sh[sd][0], sh[sd][1], el[sd][0], el[sd][1], 22 * S, false);
+      part(el[sd][0], el[sd][1], hd[sd][0], hd[sd][1], 19 * S, false);
+      disc(hd[sd][0], hd[sd][1], 13 * S, edge);
+      glow(hd[sd][0], hd[sd][1], (24 + 40 * kick[sd % (in.channels ? in.channels : 1)]) * S, nr, ng, nb, 0.6f);
     }
   }
 

@@ -34,6 +34,7 @@ repository. Then put it on the home screen with ShadowMountPlus, as with Hello P
 | L1 | joystick in port 1 / port 2 (most games: 2) |
 | Triangle | the on-screen keyboard |
 | Options | the menu |
+| Touchpad click | the SID music player, straight away |
 
 **On-screen keyboard** (Triangle; the C64 picture 3x above it):
 
@@ -86,9 +87,10 @@ shown and the player moves on when it ends (the next song, then the next tune); 
 The screen shows the tune's title, author and release, the song and its time, the SID model, and
 for each voice its waveform, note and envelope level.
 
-**Visuals:** Triangle switches the player to full-screen visuals and on to the next one; Circle comes
-back to the list. Each follows the music (its channels' levels and notes, every new note, and the
-sound itself):
+**Visuals:** Triangle steps through the views; Circle comes back to the list. First the list with
+**channel bars** over it: one see-through LED bar per channel rising from the bottom, the whole
+height at full level, with a peak that falls slowly. Then four full-screen visuals, each following
+the music (its channels' levels and notes, every new note, and the sound itself):
 
 - **Copper bars** - the Amiga's raster bars, one colour per channel, swinging on sines and flaring
   with their channel, over a starfield, with a sine scroller of the tune's name, all mirrored in
@@ -97,6 +99,9 @@ sound itself):
   breathing with the music, over a warp starfield, each channel a glowing light in orbit
 - **Plasma** - a plasma whose colours follow the notes, the sound itself as a glowing oscilloscope
   ring and line, sparks rising on new notes
+- **Dancer** - a vector dancer on a disco floor, copper bars and stars behind: a new step on each
+  beat (a new note on a loud channel), a new dance move every 8 steps (the disco point, waving arms,
+  the robot, star jumps, side steps, hands in the air), a visor and chest light pulsing with the music
 
 The song controls (pause, L1/R1, L2/R2) work there too. The visuals are `common/Visuals.h`, shared by
 both apps.

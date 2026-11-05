@@ -481,7 +481,10 @@ static int modPlaying = -1;
 static uint8_t *modData = nullptr; // the module playing (from the system)
 static char modMsg[80] = "";
 static const int kModRows = 20;
-static int modView = 0;        // 0 the list and channels, 1-3 a visual (Triangle)
+// the view (Triangle): 0 the list and channels, 1 the same with the channel
+// bars over it, 2... the full-screen visuals
+static int modView = 0;
+static const int kModViews = 2 + Visuals::COUNT;
 static Visuals modVisuals;
 static uint64_t modVisLast = 0;
 static int modPrevPeriod[ModEngine::MAX_CH], modPrevLevel[ModEngine::MAX_CH];
@@ -600,12 +603,12 @@ static void modInput() {
     modClose();
     return;
   }
-  if (pressed & RAW_TRIANGLE) modView = (modView + 1) % (1 + Visuals::COUNT);
-  if (modView > 0 && (pressed & RAW_CIRCLE)) {
+  if (pressed & RAW_TRIANGLE) modView = (modView + 1) % kModViews;
+  if (modView > 1 && (pressed & RAW_CIRCLE)) {
     modView = 0; // (back to the list)
     pressed &= ~RAW_CIRCLE;
   }
-  if (modCount > 0 && modView == 0) {
+  if (modCount > 0 && modView <= 1) {
     if (repeating(up)) modSel = (modSel - 1 + modCount) % modCount;
     if (repeating(down)) modSel = (modSel + 1) % modCount;
     if (repeating(left)) modSel = modSel - kModRows < 0 ? 0 : modSel - kModRows;
@@ -613,7 +616,7 @@ static void modInput() {
     if (modSel < modTop) modTop = modSel;
     if (modSel >= modTop + kModRows) modTop = modSel - kModRows + 1;
   }
-  if ((pressed & RAW_CROSS) && modCount > 0 && modView == 0) {
+  if ((pressed & RAW_CROSS) && modCount > 0 && modView <= 1) {
     int i = modItems[modSel];
     if (modList[i].kind == 'D') modListFolder(modList[i].path, -1);
     else modPlay(i);
@@ -771,7 +774,8 @@ static void modGlyph(uint32_t *, int x, int y, char c, int scale, uint32_t col) 
   text(x, y, s1, scale, col);
 }
 
-static void drawModVisuals() {
+// view: 1 the bars over the player's screen, 2... a full-screen visual
+static void drawModVisuals(int view) {
   uint64_t now = ps5NowUs();
   float dt = modVisLast ? (now - modVisLast) / 1e6f : 1 / 60.0f;
   modVisLast = now;
@@ -815,7 +819,8 @@ static void drawModVisuals() {
   in.paused = mod.paused;
   in.caption = "MOD PLAYER";
   static const VisFont font = {modGlyph, 8, 16};
-  modVisuals.draw(g_frame, modView - 1, in, font, dt);
+  if (view == 1) modVisuals.drawBars(g_frame, in, dt);
+  else modVisuals.draw(g_frame, view - 2, in, font, dt);
 }
 
 // ============================================================ the menu
@@ -996,8 +1001,8 @@ static void drawSides() {
   sideRow(rx, y, ICON_CROSS, "OPT", "MENU");
   y += 34;
   text(rx + 84, y += 20, "DISKS", 2, kDim);
-  text(rx + 84, y += 30, "MOD PLAYER", 2, kDim);
   text(rx + 84, y += 30, "RESET, QUIT", 2, kDim);
+  sideRow(rx, y += step, ICON_TRIANGLE, nullptr, "MOD PLAYER");
   fullCopies = 2;
 }
 
@@ -1086,8 +1091,8 @@ int main() {
       // the MOD player has the TV (and the sound); the Amiga is paused
       modInput();
       if (modOpen) {
-        if (modView > 0) drawModVisuals();
-        else drawModPlayer();
+        if (modView <= 1) drawModPlayer();
+        if (modView >= 1) drawModVisuals(modView);
         fullCopies = 1;
       }
     } else if (running) {
@@ -1099,6 +1104,7 @@ int main() {
         input_set_rmb(0);
       } else {
         if (pressed & RAW_OPTIONS) menuOpenNow();
+        if (pressed & RAW_TRIANGLE) modOpenNow(); // straight to the MOD player
         mouseFrame(true);
         input_set_lmb((held & (RAW_R1 | RAW_R2 | RAW_SQUARE | RAW_TOUCHPAD)) ? 1 : 0);
         input_set_rmb((held & (RAW_L1 | RAW_L2 | RAW_CIRCLE)) ? 1 : 0);

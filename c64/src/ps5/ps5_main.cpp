@@ -815,6 +815,7 @@ static void drawSides() {
     sideRow(x, y += step, s, ICON_CROSS, "L1", "PORT", lc, td);
     sideRow(x, y += step * 3 / 2, s, ICON_TRIANGLE, nullptr, "KEYS", lc, td);
     sideRow(x, y += step, s, ICON_CROSS, "OPT", "MENU", lc, td);
+    sideRow(x, y += step, s, ICON_CROSS, "PAD", "SID", lc, td);
   } else {
     int x = 32, y = 130, step = 56, lc = 50, td = 110;
     text(x, 44, "KEYBOARD", 3, kTitle);
@@ -854,10 +855,14 @@ static std::string sidFolder;              // the folder shown ("" = the top)
 static int sidItems[65536];                // what is in it: indices into music
 static int sidCount = 0, sidSel = 0, sidTop = 0;
 static int sidPlaying = -1;                // the tune playing (index into music)
+static int sidWaiting = -1;                // chosen while the C64 was still starting: plays when it can
 static char sidMsg[64] = "";
 static uint8_t sidFile[P4SidEngine::MAX_FILE];
 static const int kSidRows = 19;
-static int sidView = 0;        // 0 the list and voices, 1-3 a visual (Triangle)
+// the view (Triangle): 0 the list and voices, 1 the same with the channel bars
+// over it, 2... the full-screen visuals
+static int sidView = 0;
+static const int kSidViews = 2 + Visuals::COUNT;
 static Visuals sidVisuals;
 static uint64_t sidVisLast = 0;
 static uint8_t sidPrevGate[3];
@@ -944,12 +949,12 @@ static void sidInput() {
     sidClose();
     return;
   }
-  if (pressed & RAW_TRIANGLE) sidView = (sidView + 1) % (1 + Visuals::COUNT);
-  if (sidView > 0 && (pressed & RAW_CIRCLE)) {
+  if (pressed & RAW_TRIANGLE) sidView = (sidView + 1) % kSidViews;
+  if (sidView > 1 && (pressed & RAW_CIRCLE)) {
     sidView = 0; // (back to the list)
     pressed &= ~RAW_CIRCLE;
   }
-  if (sidCount > 0 && sidView == 0) {
+  if (sidCount > 0 && sidView <= 1) {
     if (repeating(up)) sidSel = (sidSel - 1 + sidCount) % sidCount;
     if (repeating(down)) sidSel = (sidSel + 1) % sidCount;
     if (repeating(left)) sidSel = sidSel - kSidRows < 0 ? 0 : sidSel - kSidRows;
@@ -957,11 +962,16 @@ static void sidInput() {
     if (sidSel < sidTop) sidTop = sidSel;
     if (sidSel >= sidTop + kSidRows) sidTop = sidSel - kSidRows + 1;
   }
-  if ((pressed & RAW_CROSS) && sidView == 0) {
+  if ((pressed & RAW_CROSS) && sidView <= 1) {
     if (sidCount > 0) {
       int i = sidItems[sidSel];
       if (music[i].kind == 'D') sidList(music[i].path, -1);
-      else if (music[i].kind == 'S' && eng.ready()) sidPlay(i, music[i].start);
+      else if (music[i].kind == 'S') {
+        // (the engine must have taken the C64 over first: its switch-over
+        // clears anything asked of it before)
+        if (eng.ready() && eng.isActive()) sidPlay(i, music[i].start);
+        else sidWaiting = i; // (still starting: in a moment)
+      }
     }
   }
   if (pressed & RAW_CIRCLE) {
@@ -987,6 +997,10 @@ static void sidInput() {
     if (pressed & RAW_L1) eng.selectSong(eng.currentSong() - 1);
     if (pressed & RAW_R2) sidNextTune(1);
     if (pressed & RAW_L2) sidNextTune(-1);
+  }
+  if (sidWaiting >= 0 && eng.ready() && eng.isActive()) {
+    sidPlay(sidWaiting, music[sidWaiting].start);
+    sidWaiting = -1;
   }
   // the end of a song: the next song of the tune, then the next tune
   if (sidPlaying >= 0 && eng.isPlaying() && !eng.isPaused()) {
@@ -1138,7 +1152,8 @@ static void sidGlyph(uint32_t *, int x, int y, char c, int scale, uint32_t col) 
   text(x, y, s1, scale, col);
 }
 
-static void drawSidVisuals() {
+// view: 1 the bars over the player's screen, 2... a full-screen visual
+static void drawSidVisuals(int view) {
   P4SidEngine &eng = P4SidEngine::get();
   uint64_t now = ps5NowUs();
   float dt = sidVisLast ? (now - sidVisLast) / 1e6f : 1 / 60.0f;
@@ -1187,7 +1202,8 @@ static void drawSidVisuals() {
   in.paused = eng.isPaused();
   in.caption = "SID MUSIC";
   static const VisFont font = {sidGlyph, 8, 8};
-  sidVisuals.draw(g_frame, sidView - 1, in, font, dt);
+  if (view == 1) sidVisuals.drawBars(g_frame, in, dt);
+  else sidVisuals.draw(g_frame, view - 2, in, font, dt);
 }
 
 // ============================================================ once a frame
@@ -1240,6 +1256,10 @@ static void frameInput() {
     if (pressed & RAW_SQUARE) pressKey(kSpace, RAW_SQUARE);
     if (pressed & RAW_CIRCLE) pressKey(kReturn, RAW_CIRCLE);
     if (pressed & RAW_R1) pressKey(kF1, RAW_R1);
+    if (pressed & RAW_TOUCHPAD) { // straight to the SID music player
+      sidOpenNow();
+      return;
+    }
     if (pressed & RAW_L1) {
       joyPort = 3 - joyPort;
       char m[32];
@@ -1314,8 +1334,8 @@ int main() {
 #endif
     cpu->vic.refresh(); // the newest finished C64 picture into g_c64Pixels
     if (sidOpen) {
-      if (sidView > 0) drawSidVisuals();
-      else drawSidPlayer();
+      if (sidView <= 1) drawSidPlayer();
+      if (sidView >= 1) drawSidVisuals(sidView);
       fullCopies = 1; // (the player has the whole TV)
     } else {
       composeC64();
