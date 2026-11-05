@@ -1,0 +1,12 @@
+# build output
+/build/
+/c64/sim/out/
+/c64/sim/run/
+
+# your own programs and disks: kept out of the repository (only the demo
+# and the test disk are in it)
+/c64/assets/c64/*
+!/c64/assets/c64/README.md
+!/c64/assets/c64/demo.prg
+!/c64/assets/c64/testdisk.d64
+/c64/assets/c64/files.txt
