@@ -7,6 +7,7 @@ music folder, with what the player shows:
 
     python3 tools/make_music_list.py c64/assets/c64/music [--songlengths Songlengths.md5]
     python3 tools/make_music_list.py amiga/assets/amiga/mods
+    python3 make_music_list.py          (in the music folder itself)
 
 The build scripts run it for you. Run it yourself after copying more music
 into the app over FTP (on a copy of the folder on your PC), then copy the
@@ -100,7 +101,8 @@ def mod_line(rel, data):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('folder', help='the music folder (music.txt is written there)')
+    ap.add_argument('folder', nargs='?', default='.',
+                    help='the music folder (music.txt is written there; default: the current folder)')
     ap.add_argument('--songlengths', help="HVSC's Songlengths.md5 (default: one in the folder, if there)")
     a = ap.parse_args()
     root = os.path.abspath(a.folder)
