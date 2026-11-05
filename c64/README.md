@@ -3,7 +3,7 @@
 The C64 emulator from the Waveshare ESP32-P4 sketch (`WaveshareP4_C64Amiga_003`, itself the
 [T-HMI-C64](https://github.com/retroelec/T-HMI-C64) emulator by retroelec) as a PS5 home-screen
 app, built with the [PS5 homebrew starter](https://github.com/MiladRTX/ps5-homebrew-starter)'s kit,
-the same way as NUCLEAR MISSION. Title ID `PPSA99903`, so it sits beside Hello PS5 (`PPSA99901`) and
+the same way as NUCLEAR MISSION. Title ID `PPSA99904`, so it sits beside Hello PS5 (`PPSA99901`) and
 NUCLEAR MISSION (`PPSA99902`).
 
 ## Build and install
@@ -13,7 +13,7 @@ In WSL or Linux, after the starter's `tools/setup.sh` (as for Hello PS5):
 ```bash
 chmod +x c64/build.sh                         # (if the zip was unpacked in Windows)
 cp /path/to/your/games/*.prg c64/assets/c64/  # programs and .d64 disks: the menu lists them
-PS5_STARTER=~/ps5-homebrew-starter c64/build.sh             # build/c64/PPSA99903 and its ZIP
+PS5_STARTER=~/ps5-homebrew-starter c64/build.sh             # build/c64/PPSA99904 and its ZIP
 PS5_STARTER=~/ps5-homebrew-starter c64/build.sh deploy <PS5 IP>   # or build and copy it over FTP
 ```
 
@@ -69,7 +69,7 @@ port and the volume, Circle or Options go back.
 - `SAVE"NAME",8` saves into the app's own storage (`/download0/c64`); the menu lists saved programs too.
 
 The PS5's sandbox won't list a folder, so `build.sh` writes `assets/c64/files.txt` with the names.
-Files copied into `/data/homebrew/PPSA99903/assets/c64` over FTP later need a line in that
+Files copied into `/data/homebrew/PPSA99904/assets/c64` over FTP later need a line in that
 `files.txt` as well.
 
 ## What's in here

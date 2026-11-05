@@ -3,7 +3,7 @@
 # starter's kit and SDK (the same set-up as Hello PS5 and NUCLEAR MISSION:
 # run the starter's tools/setup.sh once first).
 #
-#   c64/build.sh                    -> build/c64/PPSA99903/ and PPSA99903.zip
+#   c64/build.sh                    -> build/c64/PPSA99904/ and PPSA99904.zip
 #   c64/build.sh deploy <PS5 IP>    -> also copies it to /data/homebrew over FTP
 #
 # Where the starter is: PS5_STARTER=/path/to/ps5-homebrew-starter, or a
