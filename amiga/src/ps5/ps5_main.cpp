@@ -1,0 +1,711 @@
+// ps5_main.cpp
+// Amiga 500 for the PS5 - the program.
+//
+// The emulator (src/core: amiga500-esp32 by Massitux, with the Waveshare
+// ESP32-P4 port's work - AmigaCore) runs one PAL frame every 20 ms on its own
+// thread. This file:
+//
+//   the TV picture   the Amiga's 640 x 256 (lores pixels doubled) at 2 x 4:
+//                    1280 x 1024, the full height of the TV; help at the sides
+//   the DualSense    the mouse (touchpad or right stick; R1/R2/Square left
+//                    button, L1/L2/Circle right) and the joystick in port 2
+//                    (D-pad / left stick, Cross fires)
+//   the menu         the disks (boot from one, or swap it in), reset, volume
+//   the sound        Paula's stereo samples (48 kHz) to AudioOut
+//
+// The video output follows the PS5 starter's screen code
+// (ps5-native-app-boilerplate's demo renderer, Copyright (C) 2026
+// BlackBearReloaded; changes for Breeze, MiladRTX), as NUCLEAR MISSION's does.
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "../core/AmigaCore.h"
+#include "../core/chips/a500.h"
+#include "../stubs/esp_heap_caps.h"
+#include "AmigaFont.h"
+#include "ps5_sce.h"
+#include "ps5_system.h"
+
+#include <atomic>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <string>
+#include <vector>
+
+int paula_ring_avail(void);
+uint8_t *drive_alloc_adf(void);
+void drive_mount_ready(void);
+
+// ============================================================ colours
+// RGBA as the TV buffer takes it: 0xAABBGGRR
+static constexpr uint32_t rgb(uint32_t r, uint32_t g, uint32_t b) { return 0xff000000u | b << 16 | g << 8 | r; }
+// Workbench 1.3: blue, white, black, orange
+static const uint32_t kWbBlue = rgb(0x00, 0x55, 0xaa), kWbWhite = rgb(0xff, 0xff, 0xff),
+                      kWbBlack = rgb(0x00, 0x00, 0x22), kWbOrange = rgb(0xff, 0x88, 0x00);
+static const uint32_t kSideBg = rgb(0x12, 0x16, 0x22);
+static const uint32_t kText = rgb(0xe4, 0xe8, 0xf0), kDim = rgb(0x8c, 0x96, 0xaa);
+static const uint32_t kIconCross = rgb(0x7c, 0xb2, 0xe8), kIconCircle = rgb(0xff, 0x66, 0x6e),
+                      kIconSquare = rgb(0xe0, 0x8c, 0xd2), kIconTriangle = rgb(0x40, 0xe0, 0xb0);
+
+// ============================================================ the TV picture
+static const int kW = 1920, kH = 1080;
+static const int kBlock = 128, kBlocksX = kW / kBlock, kBlocksY = (kH + kBlock - 1) / kBlock;
+static const size_t kFrameBytes = 0x1000000, kMemBytes = kFrameBytes * 2, kMemAlign = 0x200000;
+static const size_t kUsedBytes = (size_t)kBlocksX * kBlocksY << 16;
+uint32_t g_frame[kW * kH]; // the TV picture, row by row
+static uint32_t lut565[65536];
+static void *scanout[2];
+static int video = -1;
+
+static inline size_t tiledOffset(unsigned x, unsigned y) {
+  const uint32_t offset = ((y << 4) & 0x70U) ^ ((y << 5) & 0xf00U) ^ ((y << 9) & 0x1000U) ^
+                          ((y << 8) & 0x4000U) ^ ((x << 2) & 0xcU) ^ ((x << 5) & 0x380U) ^
+                          ((x << 4) & 0x400U) ^ ((x << 6) & 0x800U) ^ ((x << 9) & 0xa000U);
+  const uint32_t blockIndex = (y >> 7) * kBlocksX + (x >> 7);
+  return ((size_t)blockIndex << 16) + offset;
+}
+static void copyBlocks(void *dst, int bx0, int bx1) {
+  uint8_t *bytes = (uint8_t *)dst;
+  for (int by = 0; by < kBlocksY; ++by)
+    for (int bx = bx0; bx <= bx1; ++bx)
+      for (int y0 = 0; y0 < kBlock; y0 += 8) {
+        const int top = by * kBlock + y0;
+        if (top >= kH) break;
+        for (int x0 = 0; x0 < kBlock; x0 += 4) {
+          const int left = bx * kBlock + x0;
+          for (int yy = 0; yy < 8 && top + yy < kH; ++yy) {
+            const uint32_t *src = g_frame + (top + yy) * kW + left;
+            for (int xx = 0; xx < 4; ++xx)
+              *(uint32_t *)(bytes + tiledOffset((unsigned)(left + xx), (unsigned)(top + yy))) = src[xx];
+          }
+        }
+      }
+}
+static void flushRange(void *address, size_t length) {
+#if defined(__x86_64__) && !defined(PS5_SIM)
+  uint8_t *at = (uint8_t *)address, *end = at + length;
+  for (; at < end; at += 64) __asm__ volatile("clflush (%0)" : : "r"(at) : "memory");
+  __asm__ volatile("mfence" ::: "memory");
+#else
+  (void)address;
+  (void)length;
+#endif
+}
+static void flushBlocks(void *dst, int bx0, int bx1) {
+  for (int by = 0; by < kBlocksY; ++by)
+    flushRange((uint8_t *)dst + ((size_t)(by * kBlocksX + bx0) << 16), (size_t)(bx1 - bx0 + 1) << 16);
+}
+
+[[noreturn]] static void halt(const char *msg) {
+  ps5Notify(msg);
+  for (;;) sceKernelUsleep(1000000);
+}
+
+static void videoInit() {
+  video = sceVideoOutOpen(0xff, 0, 0, nullptr);
+  if (video < 0) halt("Amiga 500: sceVideoOutOpen failed");
+  size_t pool = sceKernelGetDirectMemorySize();
+  if (pool < kMemBytes) halt("Amiga 500: not enough direct memory");
+  int64_t phys = 0;
+  if (sceKernelAllocateDirectMemory(0, (int64_t)pool, kMemBytes, kMemAlign, 3 /* wc garlic */, &phys) < 0)
+    halt("Amiga 500: direct-memory allocation failed");
+  void *mapped = nullptr;
+  if (sceKernelMapDirectMemory(&mapped, kMemBytes, 0x33, 0, phys, kMemAlign) < 0)
+    halt("Amiga 500: direct-memory mapping failed");
+  scanout[0] = mapped;
+  scanout[1] = (uint8_t *)mapped + kFrameBytes;
+  struct {
+    void *data, *metadata, *r0, *r1;
+  } bufs[2] = {{scanout[0], nullptr, nullptr, nullptr}, {scanout[1], nullptr, nullptr, nullptr}};
+  alignas(16) uint8_t attribute[80] = {};
+  sceVideoOutSetFlipRate(video, 0);
+  sceVideoOutSetBufferAttribute2(attribute, UINT64_C(0x8000000022000000) /* rgba8 srgb */, 0, kW, kH, 0, 0, 0);
+  if (sceVideoOutRegisterBuffers2(video, 0, 0, bufs, 2, attribute, 0, nullptr) < 0)
+    halt("Amiga 500: buffer registration failed");
+  for (int i = 0; i < 65536; i++) {
+    uint32_t r = (i >> 11) & 31, g = (i >> 5) & 63, b = i & 31;
+    lut565[i] = rgb((r << 3) | (r >> 2), (g << 2) | (g >> 4), (b << 3) | (b >> 2));
+  }
+}
+
+// ============================================================ drawing
+static void fillRect(int x, int y, int w, int h, uint32_t c) {
+  int x1 = x + w, y1 = y + h;
+  if (x < 0) x = 0;
+  if (y < 0) y = 0;
+  if (x1 > kW) x1 = kW;
+  if (y1 > kH) y1 = kH;
+  for (int yy = y; yy < y1; yy++) {
+    uint32_t *row = g_frame + yy * kW;
+    for (int xx = x; xx < x1; xx++) row[xx] = c;
+  }
+}
+static void frameRect(int x, int y, int w, int h, int t, uint32_t c) {
+  fillRect(x, y, w, t, c);
+  fillRect(x, y + h - t, w, t, c);
+  fillRect(x, y, t, h, c);
+  fillRect(x + w - t, y, t, h, c);
+}
+// The board's 8 x 16 font; scale x scale each pixel
+static void text(int x, int y, const char *s, int scale, uint32_t col) {
+  for (; *s; s++, x += 8 * scale) {
+    unsigned ch = (unsigned char)*s;
+    if (ch < 32 || ch > 126) ch = '?';
+    const uint8_t *g = amigaFont[ch - 32];
+    for (int gy = 0; gy < 16; gy++)
+      for (int gx = 0; gx < 8; gx++)
+        if (g[gy] & (0x80 >> gx)) fillRect(x + gx * scale, y + gy * scale, scale, scale, col);
+  }
+}
+static int textWidth(const char *s, int scale) { return (int)strlen(s) * 8 * scale; }
+
+enum Icon { ICON_CROSS, ICON_CIRCLE, ICON_SQUARE, ICON_TRIANGLE };
+static void icon(Icon kind, int cx, int cy, int size) {
+  int r = size / 2, t = size >= 24 ? 3 : 2;
+  for (int dy = -r; dy <= r; dy++)
+    for (int dx = -r; dx <= r; dx++) {
+      bool on = false;
+      uint32_t col = 0;
+      int k = r * 7 / 10;
+      switch (kind) {
+      case ICON_CROSS:
+        on = (abs(dx - dy) <= t / 2 + 1 || abs(dx + dy) <= t / 2 + 1) && abs(dx) <= k && abs(dy) <= k;
+        col = kIconCross;
+        break;
+      case ICON_CIRCLE: {
+        int d2 = dx * dx + dy * dy, ro = r * 8 / 10, ri = ro - t - 1;
+        on = d2 <= ro * ro && d2 >= ri * ri;
+        col = kIconCircle;
+        break;
+      }
+      case ICON_SQUARE:
+        on = (abs(dx) <= k && abs(dy) <= k) && (abs(dx) > k - t - 1 || abs(dy) > k - t - 1);
+        col = kIconSquare;
+        break;
+      case ICON_TRIANGLE: {
+        int top = -r * 7 / 10, bot = r * 6 / 10;
+        if (dy < top || dy > bot) break;
+        float f = (float)(dy - top) / (bot - top);
+        float half = f * r * 0.8f;
+        float edge = half - (dx < 0 ? -dx : dx);
+        on = edge >= 0 && (edge <= t + 0.5f || dy >= bot - t);
+        col = kIconTriangle;
+        break;
+      }
+      }
+      if (on) g_frame[(cy + dy) * kW + cx + dx] = col;
+    }
+}
+static void buttonLabel(const char *name, int cx, int cy) {
+  int w = textWidth(name, 1) + 10, h = 20;
+  frameRect(cx - w / 2, cy - h / 2, w, h, 2, kDim);
+  text(cx - textWidth(name, 1) / 2, cy - 8, name, 1, kText);
+}
+
+// ============================================================ the Amiga's picture
+// 640 x 512 RGB565: each Amiga line written twice by AmigaCore
+static uint16_t picture[640 * 512];
+static const int kPicX = 320, kPicY = 28; // on the TV: 1280 x 1024
+
+static void composePicture() {
+  for (int r = 0; r < 512; r++) {
+    const uint16_t *src = picture + r * 640;
+    uint32_t *out = g_frame + (kPicY + r * 2) * kW + kPicX;
+    for (int x = 0; x < 640; x++) {
+      uint32_t c = lut565[src[x]];
+      out[2 * x] = out[2 * x + 1] = c;
+    }
+    memcpy(out + kW, out, 1280 * 4);
+  }
+}
+
+// ============================================================ the emulator
+static uint8_t chipRam[0x80000], slowRam[0x80000], kickRom[0x40000];
+static std::atomic<int> emuFps{0};
+static std::atomic<bool> running{false};
+
+static void emuThread(void *) {
+  uint64_t next = ps5NowUs();
+  uint64_t statStart = next;
+  int frames = 0;
+  while (true) {
+    AmigaFrameTimes t;
+    amigaRunFrame(&t);
+    frames++;
+    uint64_t now = ps5NowUs();
+    if (now - statStart >= 1000000) {
+      emuFps.store((int)(frames * 1000000ull / (now - statStart)));
+      frames = 0;
+      statStart = now;
+    }
+    // one frame every 20 ms, as a PAL Amiga (50 a second)
+    next += 20000;
+    if (next > now) sceKernelUsleep((uint32_t)(next - now));
+    else if (now - next > 100000) next = now; // (far behind: no catching up)
+  }
+}
+
+// ============================================================ sound
+static const int kGrain = 256;
+static int audioPort = -1;
+static std::atomic<int> volumePct{80};
+
+static void soundThread(void *) {
+  static int16_t out[kGrain * 2];
+  while (true) {
+    // too far behind the emulator (its clock and the sound's drift apart a
+    // little): skip ahead, so the delay stays short (about 50 ms)
+    int avail = paula_ring_avail();
+    if (avail > 2400 + 1200) {
+      int16_t l, r;
+      for (int i = avail - 2400; i > 0; i--) paula_ring_pop(&l, &r);
+    }
+    int vol = volumePct.load(std::memory_order_relaxed);
+    for (int i = 0; i < kGrain; i++) {
+      int16_t l, r;
+      paula_ring_pop(&l, &r);
+      // the Amiga's channels are hard left and right: mix a quarter across,
+      // easier on headphones and a TV
+      int ml = (l * 3 + r) / 4, mr = (r * 3 + l) / 4;
+      out[2 * i] = (int16_t)(ml * vol / 100);
+      out[2 * i + 1] = (int16_t)(mr * vol / 100);
+    }
+    if (audioPort < 0 || sceAudioOutOutput(audioPort, out) < 0) sceKernelUsleep(kGrain * 1000000 / 48000);
+  }
+}
+
+static void soundStart() {
+  int r = sceAudioOutInit();
+  if (r != 0 && (unsigned)r != 0x8026000eu) printf("Amiga: AudioOut init failed %x\n", (unsigned)r);
+  audioPort = sceAudioOutOpen(0xff, 0, 0, kGrain, 48000, 1); // the main port, s16 stereo
+  if (audioPort < 0) ps5Notify("Amiga 500: no sound output");
+  ps5StartThread(soundThread, nullptr, 64 * 1024);
+}
+
+// ============================================================ disks
+static std::vector<std::string> disks;
+static std::string diskInDrive;           // DF0:
+static uint8_t *diskBuf = nullptr;        // a disk on its way in (AmigaCore copies it)
+static char status[96] = "";
+
+static void requestDisk(const std::string &name, bool boot) {
+  if (amigaDiskBusy()) return;            // (the last one is still going in)
+  std::string err = AmigaFiles::readDisk(name, diskBuf);
+  if (!err.empty()) {
+    snprintf(status, sizeof(status), "%s", err.c_str());
+    return;
+  }
+  amigaRequestDisk(diskBuf, boot);
+  diskInDrive = name;
+}
+
+// ============================================================ the controller
+static int padHandle = -1;
+static const int kSample = 120, kSamples = 16;
+static uint8_t (*padSamples)[kSample] = nullptr;
+static uint32_t padHeld = 0;
+static uint8_t padLX = 128, padLY = 128, padRX = 128, padRY = 128;
+static bool padTouch = false;
+static float padTX = 0, padTY = 0, padTW = 1920, padTH = 943;
+
+enum : uint32_t {
+  RAW_OPTIONS = 0x0008, RAW_UP = 0x0010, RAW_RIGHT = 0x0020, RAW_DOWN = 0x0040, RAW_LEFT = 0x0080,
+  RAW_L2 = 0x0100, RAW_R2 = 0x0200, RAW_L1 = 0x0400, RAW_R1 = 0x0800, RAW_TRIANGLE = 0x1000,
+  RAW_CIRCLE = 0x2000, RAW_CROSS = 0x4000, RAW_SQUARE = 0x8000, RAW_TOUCHPAD = 0x00100000,
+  RAW_INTERCEPTED = 0x80000000u,
+  STICK_UP = 0x01000000, STICK_DOWN = 0x02000000, STICK_LEFT = 0x04000000, STICK_RIGHT = 0x08000000,
+};
+
+static void padInit() {
+  sceUserServiceInitialize(nullptr);
+  int32_t user = -1;
+  if (sceUserServiceGetInitialUser(&user) < 0 || user < 0 || scePadInit() < 0) return;
+  padSamples = (uint8_t(*)[kSample])malloc(64 * 1024);
+  if (!padSamples) return;
+  memset(padSamples, 0, 64 * 1024);
+  padHandle = scePadOpen(user, 0, 0, nullptr);
+  if (padHandle < 0) padHandle = scePadGetHandle(user, 0, 0);
+}
+
+static void padRead() {
+  if (padHandle < 0 || !padSamples) return;
+  int n = scePadRead(padHandle, padSamples, kSamples);
+  if (n <= 0) return;
+  uint32_t any = 0;
+  for (int i = 0; i < n; i++) {
+    const uint8_t *s = padSamples[i];
+    uint32_t raw = (uint32_t)s[0] | (uint32_t)s[1] << 8 | (uint32_t)s[2] << 16 | (uint32_t)s[3] << 24;
+    if (raw & RAW_INTERCEPTED) {
+      any = 0;
+      padLX = padLY = padRX = padRY = 128;
+      padTouch = false;
+      continue;
+    }
+    any |= raw;
+    padLX = s[4];
+    padLY = s[5];
+    padRX = s[6];
+    padRY = s[7];
+    padTouch = s[52] > 0;
+    if (padTouch) {
+      float x = (float)(s[60] | s[61] << 8), y = (float)(s[62] | s[63] << 8);
+      if (x + 1 > padTW) padTW = x + 1;
+      if (y + 1 > padTH) padTH = y + 1;
+      padTX = x / (padTW - 1);
+      padTY = y / (padTH - 1);
+    }
+  }
+  any &= 0x00ffffffu;
+  float lx = (padLX - 128) / 127.0f, ly = (padLY - 128) / 127.0f;
+  if (lx < -0.45f) any |= STICK_LEFT;
+  if (lx > 0.45f) any |= STICK_RIGHT;
+  if (ly < -0.45f) any |= STICK_UP;
+  if (ly > 0.45f) any |= STICK_DOWN;
+  padHeld = any;
+}
+
+static uint32_t held = 0, pressed = 0, prevHeld = 0;
+static uint64_t repeatAt[32];
+static bool repeating(uint32_t bits) {
+  uint64_t now = ps5NowUs();
+  for (int b = 0; b < 32; b++) {
+    uint32_t bit = 1u << b;
+    if (!(bits & bit)) continue;
+    if (pressed & bit) {
+      repeatAt[b] = now + 380000;
+      return true;
+    }
+    if ((held & bit) && now >= repeatAt[b]) {
+      repeatAt[b] = now + 90000;
+      return true;
+    }
+  }
+  return false;
+}
+
+// ---- the mouse
+static bool prevTouch = false;
+static float prevTX = 0, prevTY = 0, mouseAccX = 0, mouseAccY = 0;
+
+static void mouseFrame(bool active) {
+  float dx = 0, dy = 0;
+  // the touchpad, like a laptop's: its width is about 500 mouse steps (one
+  // and a half times across a low-resolution screen); it is about half as
+  // tall as it is wide, so up and down is half that
+  if (active && padTouch && prevTouch) {
+    dx += (padTX - prevTX) * 500.0f;
+    dy += (padTY - prevTY) * 250.0f;
+  }
+  prevTouch = padTouch;
+  prevTX = padTX;
+  prevTY = padTY;
+  // the right stick: faster the further it goes
+  auto stick = [](uint8_t v) {
+    float f = (v - 128) / 127.0f, a = f < 0 ? -f : f;
+    if (a < 0.15f) return 0.0f;
+    a = (a - 0.15f) / 0.85f;
+    return (f < 0 ? -1.0f : 1.0f) * a * a * 9.0f;
+  };
+  if (active) {
+    dx += stick(padRX);
+    dy += stick(padRY);
+  }
+  mouseAccX += dx;
+  mouseAccY += dy;
+  int ix = (int)mouseAccX, iy = (int)mouseAccY;
+  // (input.device reads the counters each frame as 8-bit steps: keep each
+  // step well inside that)
+  if (ix > 40) ix = 40;
+  if (ix < -40) ix = -40;
+  if (iy > 40) iy = 40;
+  if (iy < -40) iy = -40;
+  mouseAccX -= ix;
+  mouseAccY -= iy;
+  if (mouseAccX > 40 || mouseAccX < -40) mouseAccX = 0;
+  if (mouseAccY > 40 || mouseAccY < -40) mouseAccY = 0;
+  if (ix || iy) input_mouse_move(ix, iy);
+}
+
+// ============================================================ the menu
+enum ItemKind { IT_RESUME, IT_RESET, IT_VOLUME, IT_HEADER, IT_DISK, IT_NONE };
+struct Item {
+  ItemKind kind;
+  std::string name;
+};
+static std::vector<Item> items;
+static bool menuOpen = false;
+static int menuSel = 0, menuTop = 0;
+static const int kMenuRows = 18;
+
+static void menuOpenNow() {
+  items.clear();
+  items.push_back({IT_RESUME, ""});
+  items.push_back({IT_RESET, ""});
+  items.push_back({IT_VOLUME, ""});
+  items.push_back({IT_HEADER, ""});
+  for (auto &d : disks) items.push_back({IT_DISK, d});
+  if (disks.empty()) items.push_back({IT_NONE, "(no .adf disks in the app)"});
+  menuSel = 0;
+  for (int i = 0; i < (int)items.size(); i++)
+    if (items[i].kind == IT_DISK && (menuSel == 0 || items[i].name == diskInDrive)) {
+      menuSel = i;
+      if (items[i].name == diskInDrive) break;
+    }
+  menuTop = menuSel < kMenuRows ? 0 : menuSel - kMenuRows / 2;
+  menuOpen = true;
+}
+
+static bool selectable(int i) { return items[i].kind != IT_HEADER && items[i].kind != IT_NONE; }
+
+static void menuInput() {
+  const uint32_t up = RAW_UP | STICK_UP, down = RAW_DOWN | STICK_DOWN, left = RAW_LEFT | STICK_LEFT,
+                 right = RAW_RIGHT | STICK_RIGHT;
+  int n = (int)items.size();
+  if (repeating(up)) {
+    int i = menuSel;
+    do i = (i - 1 + n) % n;
+    while (!selectable(i));
+    menuSel = i;
+  }
+  if (repeating(down)) {
+    int i = menuSel;
+    do i = (i + 1) % n;
+    while (!selectable(i));
+    menuSel = i;
+  }
+  if (menuSel < menuTop) menuTop = menuSel;
+  if (menuSel >= menuTop + kMenuRows) menuTop = menuSel - kMenuRows + 1;
+  if (menuSel <= 3) menuTop = 0;
+  Item &it = items[menuSel];
+  if (it.kind == IT_VOLUME && (repeating(left) || repeating(right))) {
+    int v = volumePct.load() + ((held & right) ? 10 : -10);
+    volumePct.store(v < 0 ? 0 : v > 100 ? 100 : v);
+  }
+  if (pressed & (RAW_CIRCLE | RAW_OPTIONS)) {
+    menuOpen = false;
+    return;
+  }
+  if (it.kind == IT_DISK && (pressed & (RAW_CROSS | RAW_SQUARE))) {
+    bool boot = (pressed & RAW_CROSS) != 0;
+    requestDisk(it.name, boot);
+    snprintf(status, sizeof(status), "%s %s", boot ? "BOOTING" : "DF0:", it.name.c_str());
+    menuOpen = false;
+    return;
+  }
+  if (pressed & RAW_CROSS) {
+    if (it.kind == IT_RESUME) menuOpen = false;
+    if (it.kind == IT_RESET) {
+      if (!diskInDrive.empty()) requestDisk(diskInDrive, true); // (a restart with the disk in)
+      else amigaRequestReset();
+      snprintf(status, sizeof(status), "RESET");
+      menuOpen = false;
+    }
+  }
+}
+
+static void drawMenu() {
+  int rowH = 40, w = 1040, h = (kMenuRows + 4) * rowH + 40;
+  int x = kPicX + (1280 - w) / 2, y = kPicY + (1024 - h) / 2;
+  // a Workbench window: white frame, blue inside, title bar
+  fillRect(x, y, w, h, kWbBlue);
+  frameRect(x, y, w, h, 4, kWbWhite);
+  fillRect(x, y, w, 40, kWbWhite);
+  text(x + 16, y + 4, "Amiga 500 on PS5", 2, kWbBlue);
+  int tx = x + 32, ty = y + 56;
+  int n = (int)items.size();
+  for (int r = 0; r < kMenuRows && menuTop + r < n; r++) {
+    int i = menuTop + r;
+    const Item &it = items[i];
+    char line[96];
+    uint32_t col = kWbWhite;
+    switch (it.kind) {
+    case IT_RESUME: snprintf(line, sizeof(line), "Back to the Amiga"); break;
+    case IT_RESET: snprintf(line, sizeof(line), "Reset (Ctrl-Amiga-Amiga)"); break;
+    case IT_VOLUME: snprintf(line, sizeof(line), "Volume               %3d%%", volumePct.load()); break;
+    case IT_HEADER:
+      snprintf(line, sizeof(line), "Disks:   X boot from it    [] swap into DF0:");
+      col = kWbBlack;
+      break;
+    case IT_DISK:
+      snprintf(line, sizeof(line), "%s%.48s", it.name == diskInDrive ? "DF0: " : "     ", it.name.c_str());
+      if (it.name == diskInDrive) col = kWbOrange;
+      break;
+    case IT_NONE: snprintf(line, sizeof(line), "%s", it.name.c_str()); col = kWbBlack; break;
+    }
+    int ly = ty + r * rowH;
+    if (i == menuSel) {
+      fillRect(tx - 12, ly - 2, w - 40, rowH - 4, kWbOrange);
+      col = kWbBlack;
+    }
+    text(tx, ly + 2, line, 2, col);
+  }
+  int by = y + h - 52;
+  icon(ICON_CROSS, tx + 12, by + 16, 26);
+  text(tx + 32, by, "choose", 2, kWbWhite);
+  icon(ICON_CIRCLE, tx + 232, by + 16, 26);
+  text(tx + 252, by, "back", 2, kWbWhite);
+  text(tx + 420, by, "<> volume", 2, kWbWhite);
+}
+
+// ============================================================ the sides
+static int fullCopies = 2;
+static void sideRow(int x, int y, Icon ic, const char *btn, const char *what) {
+  if (btn) buttonLabel(btn, x + 40, y + 16);
+  else icon(ic, x + 40, y + 16, 26);
+  text(x + 84, y, what, 2, kText);
+}
+
+static void drawSides() {
+  fillRect(0, 0, kW, kH, kSideBg);
+  // left: the name and the mouse; right: the joystick and the rest
+  text(28, 40, "AMIGA", 4, kWbOrange);
+  text(28, 110, "500", 4, kWbWhite);
+  text(32, 180, "ON PS5", 2, kDim);
+  int x = 8, y = 300, step = 50;
+  text(x + 20, y, "MOUSE", 2, kWbOrange);
+  y += step;
+  text(x + 20, y, "TOUCHPAD OR", 2, kText);
+  y += 34;
+  text(x + 20, y, "RIGHT STICK", 2, kText);
+  y += step;
+  sideRow(x, y, ICON_SQUARE, nullptr, "LEFT");
+  sideRow(x, y += step, ICON_CROSS, "R1 R2", "LEFT");
+  sideRow(x, y += step, ICON_CROSS, "PAD", "LEFT");
+  sideRow(x, y += step, ICON_CIRCLE, nullptr, "RIGHT");
+  sideRow(x, y += step, ICON_CROSS, "L1 L2", "RIGHT");
+
+  int rx = 1600 + 8;
+  y = 300;
+  text(rx + 20, y, "JOYSTICK", 2, kWbOrange);
+  y += step;
+  text(rx + 20, y, "PORT 2", 2, kDim);
+  y += step;
+  sideRow(rx, y, ICON_CROSS, "D-PAD", "MOVE");
+  sideRow(rx, y += step, ICON_CROSS, "STICK", "MOVE");
+  sideRow(rx, y += step, ICON_CROSS, nullptr, "FIRE");
+  y += step * 2;
+  sideRow(rx, y, ICON_CROSS, "OPT", "MENU");
+  y += 34;
+  text(rx + 84, y += 20, "DISKS", 2, kDim);
+  text(rx + 84, y += 30, "RESET", 2, kDim);
+  fullCopies = 2;
+}
+
+// the disk in the drive and the speed, under the help on the left
+static void drawStatus() {
+  static char shown[200] = "";
+  char now[200];
+  snprintf(now, sizeof(now), "%s|%d|%s", diskInDrive.c_str(), emuFps.load(), status);
+  if (strcmp(now, shown) == 0) return;
+  snprintf(shown, sizeof(shown), "%s", now);
+  fillRect(0, 900, 320, 180, kSideBg);
+  text(28, 910, "DF0:", 2, kDim);
+  std::string d = diskInDrive.empty() ? "(empty)" : diskInDrive;
+  if (d.size() > 34) d = d.substr(0, 34);
+  // the name in two lines of 17
+  text(28, 944, d.substr(0, 17).c_str(), 1, kText);
+  if (d.size() > 17) text(28, 964, d.substr(17).c_str(), 1, kText);
+  char f[32];
+  snprintf(f, sizeof(f), "%d FPS", emuFps.load());
+  text(28, 1000, f, 2, kDim);
+  if (status[0]) text(28, 1040, status, 1, kDim);
+  fullCopies = 2;
+}
+
+// ============================================================ a message instead of the Amiga
+static void showMessage(const char *title, const std::string &why, const char *hint1, const char *hint2) {
+  fillRect(kPicX, kPicY, 1280, 1024, kWbBlue);
+  text(kPicX + (1280 - textWidth(title, 4)) / 2, kPicY + 300, title, 4, kWbWhite);
+  text(kPicX + (1280 - textWidth(why.c_str(), 2)) / 2, kPicY + 420, why.c_str(), 2, kWbOrange);
+  text(kPicX + (1280 - textWidth(hint1, 2)) / 2, kPicY + 520, hint1, 2, kWbWhite);
+  text(kPicX + (1280 - textWidth(hint2, 2)) / 2, kPicY + 560, hint2, 2, kWbWhite);
+}
+
+// ============================================================ the program
+int main() {
+  padInit();
+  videoInit();
+  drawSides();
+  for (int i = 0; i < 640 * 512; i++) picture[i] = 0x02b5; // Workbench blue, until the Amiga draws
+  composePicture();
+  copyBlocks(scanout[0], 0, kBlocksX - 1);
+  flushRange(scanout[0], kUsedBytes);
+  sceVideoOutSubmitFlip(video, 0, 1, 1);
+  sceVideoOutWaitVblank(video);
+  sceSystemServiceHideSplashScreen();
+
+  diskBuf = (uint8_t *)heap_caps_malloc(901120, 0);
+  std::string err = AmigaFiles::loadKickstart(kickRom);
+  if (err.empty()) {
+    // the disk at start-up: default.adf, else the first one
+    disks = AmigaFiles::listDisks();
+    std::string boot;
+    for (auto &d : disks)
+      if (strcasecmp(d.c_str(), "default.adf") == 0) boot = d;
+    if (boot.empty() && !disks.empty()) boot = disks[0];
+    if (!boot.empty()) {
+      uint8_t *adf = drive_alloc_adf();
+      std::string e = adf ? AmigaFiles::readDisk(boot, adf) : "NO MEMORY FOR THE DISK";
+      if (e.empty()) {
+        drive_mount_ready();
+        diskInDrive = boot;
+      } else {
+        snprintf(status, sizeof(status), "%s", e.c_str());
+      }
+    }
+    AmigaOutput out = {picture, 640, 0, 0, nullptr};
+    amigaMicros = [] { return (int64_t)ps5NowUs(); };
+    if (amigaCoreInit(chipRam, slowRam, kickRom, out)) {
+      soundStart();
+      ps5StartThread(emuThread, nullptr, 1024 * 1024);
+      running = true;
+    } else {
+      err = "THE EMULATOR DID NOT START";
+    }
+  }
+
+  int shown = 0;
+  for (int64_t flip = 2;; ++flip) {
+    sceVideoOutWaitVblank(video);
+    padRead();
+    held = padHeld;
+    pressed = held & ~prevHeld;
+    prevHeld = held;
+
+    if (running) {
+      if (menuOpen) {
+        menuInput();
+        mouseFrame(false);
+        input_set_joy(0, 0, 0, 0, 0);
+        input_set_lmb(0);
+        input_set_rmb(0);
+      } else {
+        if (pressed & RAW_OPTIONS) menuOpenNow();
+        mouseFrame(true);
+        input_set_lmb((held & (RAW_R1 | RAW_R2 | RAW_SQUARE | RAW_TOUCHPAD)) ? 1 : 0);
+        input_set_rmb((held & (RAW_L1 | RAW_L2 | RAW_CIRCLE)) ? 1 : 0);
+        input_set_joy((held & (RAW_UP | STICK_UP)) != 0, (held & (RAW_DOWN | STICK_DOWN)) != 0,
+                      (held & (RAW_LEFT | STICK_LEFT)) != 0, (held & (RAW_RIGHT | STICK_RIGHT)) != 0,
+                      (held & RAW_CROSS) != 0);
+      }
+      composePicture();
+      if (menuOpen) drawMenu();
+      drawStatus();
+    } else {
+      showMessage("NO KICKSTART", err, "Put kick.rom (Kickstart 1.3, 256K) in amiga/assets/amiga",
+                  "and build the app again - see amiga/README.md");
+    }
+
+    int back = shown ^ 1;
+    if (fullCopies > 0) {
+      fullCopies--;
+      copyBlocks(scanout[back], 0, kBlocksX - 1);
+      flushRange(scanout[back], kUsedBytes);
+    } else {
+      int bx0 = kPicX / kBlock, bx1 = (kPicX + 1280 - 1) / kBlock;
+      copyBlocks(scanout[back], bx0, bx1);
+      flushBlocks(scanout[back], bx0, bx1);
+    }
+    if (sceVideoOutSubmitFlip(video, back, 1, flip) >= 0) shown = back;
+  }
+}

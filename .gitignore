@@ -10,3 +10,9 @@
 !/c64/assets/c64/demo.prg
 !/c64/assets/c64/testdisk.d64
 /c64/assets/c64/files.txt
+
+# the Amiga's Kickstart and disks: yours, kept out of the repository
+/amiga/assets/amiga/*
+!/amiga/assets/amiga/README.md
+/amiga/sim/out/
+/amiga/sim/run/

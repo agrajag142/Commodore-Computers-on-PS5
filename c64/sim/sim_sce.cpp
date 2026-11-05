@@ -9,6 +9,7 @@
 //   controller    a script: SIM_PAD="120-125:4000;300-302:1000" holds those
 //                 buttons (the PS5's bits, hex) for those frames;
 //                 SIM_TOUCH="200-260:0.5,0.4" puts a finger on the touchpad
+//                 ("200-260:0.2,0.5>0.6,0.3" slides it from one place to the other)
 //   sound         AudioOut takes its time like the real one; SIM_WAV=file
 //                 also writes what was played
 //   notifications printed
@@ -141,7 +142,7 @@ struct PadStep {
 };
 struct TouchStep {
   long from, to;
-  float x, y;
+  float x, y, x1, y1; // (from x, y to x1, y1: a finger sliding)
 };
 static std::vector<PadStep> padScript;
 static std::vector<TouchStep> touchScript;
@@ -164,7 +165,8 @@ extern "C" int scePadInit() {
     size_t at = 0;
     while (at < all.size()) {
       TouchStep t{};
-      sscanf(all.c_str() + at, "%ld-%ld:%f,%f", &t.from, &t.to, &t.x, &t.y);
+      int got = sscanf(all.c_str() + at, "%ld-%ld:%f,%f>%f,%f", &t.from, &t.to, &t.x, &t.y, &t.x1, &t.y1);
+      if (got < 6) t.x1 = t.x, t.y1 = t.y;
       touchScript.push_back(t);
       at = all.find(';', at);
       if (at == std::string::npos) break;
@@ -190,7 +192,9 @@ extern "C" int scePadRead(int32_t, void *data, int32_t) {
   for (auto &t : touchScript)
     if (f >= t.from && f <= t.to) {
       s[52] = 1;
-      uint16_t x = (uint16_t)(t.x * 1919), y = (uint16_t)(t.y * 942);
+      float k = t.to > t.from ? (float)(f - t.from) / (t.to - t.from) : 0;
+      float fx = t.x + (t.x1 - t.x) * k, fy = t.y + (t.y1 - t.y) * k;
+      uint16_t x = (uint16_t)(fx * 1919), y = (uint16_t)(fy * 942);
       s[60] = x & 0xff;
       s[61] = x >> 8;
       s[62] = y & 0xff;

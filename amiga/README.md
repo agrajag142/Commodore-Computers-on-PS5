@@ -1,0 +1,102 @@
+# Amiga 500 for the PS5
+
+The Amiga 500 emulator from the Waveshare ESP32-P4 sketch (`WaveshareP4_C64Amiga_003`: Massitux's
+[amiga500-esp32](https://github.com/massitux/amiga500-esp32) with Musashi's 68000, and the board
+port's work on the picture, copper, blitter and sound) as a PS5 home-screen app, built like the C64
+one. Title ID `PPSA99905`, beside the C64 (`PPSA99904`).
+
+## What you need
+
+No ROM or disk comes with it: use your own copies (Amiga Forever has both).
+
+- **Kickstart 1.3** (256K) as `kick.rom` (or `kick34005.A500`, `kick13.rom`, `amiga-os-130.rom`, or
+  any `.rom`). Amiga Forever's encrypted ROMs work with their `rom.key` next to them. 512K
+  Kickstarts (2.0 and later) are not supported. Without one the app shows NO KICKSTART.
+- **Disks** (`.adf`, 880K). `default.adf` goes in DF0: at start-up, else the first one by name.
+
+Put them in `amiga/assets/amiga` before building (they stay out of git).
+
+## Build and install
+
+As for the C64 (the starter's `tools/setup.sh` first):
+
+```bash
+chmod +x amiga/build.sh
+cp /path/to/kick.rom /path/to/*.adf amiga/assets/amiga/
+PS5_STARTER=~/ps5-homebrew-starter amiga/build.sh             # build/amiga/PPSA99905 and its ZIP
+PS5_STARTER=~/ps5-homebrew-starter amiga/build.sh deploy <PS5 IP>   # or build and copy it over FTP
+```
+
+Then copy the `PPSA99905` folder into `/data/homebrew` (so that
+`/data/homebrew/PPSA99905/sce_sys/param.json` exists): ShadowMountPlus installs it.
+
+**Adding files later, over FTP:** copy them into `/data/homebrew/PPSA99905/assets/amiga`. These
+names are found as they are: `kick.rom`, `kick34005.A500`, `kick13.rom`, `amiga-os-130.rom`,
+`rom.key`, `default.adf`, `df0.adf`, `df1.adf`, `disk1.adf`, `disk2.adf`. Any other name needs a
+line in `files.txt` there (the PS5 won't let the app list the folder).
+
+## Controls
+
+The picture is the Amiga's 640 x 256 at 2 x 4 (1280 x 1024), the full height of the TV.
+
+| DualSense | Amiga |
+| --- | --- |
+| Touchpad (slide, like a laptop's) or right stick | the mouse |
+| Square, R1, R2 or a touchpad click | left mouse button |
+| Circle, L1 or L2 | right mouse button |
+| D-pad or left stick | joystick in port 2 |
+| Cross | fire |
+| Options | the menu |
+
+Mouse and joystick work at the same time. **Menu** (Options): back to the Amiga, reset (with the
+disk in DF0: still in), the volume, and the disks: **Cross** restarts the Amiga with that disk in
+DF0:, **Square** swaps it in without a restart (for a game's or demo's next disk - the old one comes
+out for half a second first, so the Amiga notices). The one in DF0: is orange. The Amiga keeps
+running behind the menu. The bottom left shows the disk in DF0: and the frames per second (50 is
+full speed).
+
+## What's in here
+
+| | |
+| --- | --- |
+| `src/core/AmigaCore.*` | the emulated Amiga as one unit (the board's file; a thread-safe reset added) |
+| `src/core/chips/` | amiga500-esp32 and Musashi, as on the board (Paula at 48 kHz for the PS5) |
+| `src/stubs/` | `Arduino.h` and `esp_heap_caps.h`: the emulator is built as for the board (`ARDUINO`) and these stand in |
+| `src/ps5/ps5_main.cpp` | the TV picture, the DualSense, the menu, the sound, the emulator's thread |
+| `src/ps5/ps5_system.cpp` | memory (`mmap`: a PS5 app's malloc heap is small), threads, the clock |
+| `src/ps5/AmigaFilesPS5.cpp` | the Kickstart (and Amiga Forever's encryption) and the disks, from `assets/amiga` |
+| `src/ps5/AmigaFont.h` | the board's 8 x 16 font |
+| `sce_sys/` | `param.json` and the icon |
+| `sim/` | the PC simulator (the C64's stand-ins, `c64/sim/sim_sce.cpp`) |
+| `tools/testrom.s` | a tiny test "Kickstart" for the simulator (below) |
+
+The emulator runs on one thread here: the board's split of picture drawing and area blits onto its
+second core isn't needed on the PS5.
+
+## The PC simulator
+
+```bash
+amiga/sim/build.sh
+# a folder with assets/amiga/kick.rom (and disks), then e.g. 10 seconds with pictures at 5 and 10 s
+SIM_APP0=/path/to/that/folder SIM_FRAMES=600 SIM_SHOTS=300,600 amiga/sim/out/amigasim
+```
+
+`SIM_PAD`, `SIM_TOUCH` (`"110-170:0.2,0.6>0.5,0.3"` slides a finger) and `SIM_WAV` as for the C64
+(`c64/README.md`); `SIM_LOG=1` shows the emulator's log.
+
+Without a Kickstart, `tools/testrom.s` stands in: assembled with
+[vasm](http://sun.hasenbraten.de/vasm/) (`vasmm68k_mot -Fbin -o testrom.rom testrom.s`), it shows
+stripes through the copper and a bitplane, a sprite the mouse moves, a tone on Paula, and changes
+colour with the mouse buttons and the joystick. It boots nothing else.
+
+## Not yet
+
+- A keyboard (the emulator has none yet).
+- Custom-loader disks: standard AmigaDOS disks work; many games load with their own track loaders.
+- The MOD player from the board.
+- 50 frames a second on a 60 Hz TV: one picture in five is shown twice.
+
+## Licence
+
+GPL-3.0 for this repository (`LICENSE`); amiga500-esp32 is MIT (`LICENSE_amiga500-esp32.txt`), as is
+Musashi.
