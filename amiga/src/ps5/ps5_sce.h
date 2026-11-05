@@ -17,6 +17,8 @@ int sceKernelMapDirectMemory(void **address, size_t length, int protection, int 
 int sceKernelSendNotificationRequest(uint32_t device, void *request, size_t size, int blocking);
 int sceKernelUsleep(uint32_t microseconds);
 int sceSystemServiceHideSplashScreen();
+// "exit": closes the app (the kit's way; returning from main would crash)
+int sceSystemServiceLoadExec(const char *path, const char **arguments);
 int sceVideoOutOpen(int32_t user_id, int32_t bus_type, int32_t index, const void *param);
 int sceVideoOutSetFlipRate(int32_t handle, int32_t rate);
 int sceVideoOutSubmitFlip(int32_t handle, int32_t buffer_index, uint32_t flip_mode, int64_t flip_argument);

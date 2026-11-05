@@ -107,6 +107,15 @@ public:
 };
 } // namespace
 
+// The last n samples the emulator made (oldest first), for the music
+// player's oscilloscope
+int ps5SoundRecent(int16_t *out, int n) {
+  int head = ringHead.load(std::memory_order_acquire);
+  if (n > kRing) n = kRing;
+  for (int i = 0; i < n; i++) out[i] = ring[(head - n + i + kRing) % kRing];
+  return n;
+}
+
 void ps5SoundSetVolume(int percent) {
   volumePct.store(percent < 0 ? 0 : percent > 100 ? 100 : percent, std::memory_order_relaxed);
 }

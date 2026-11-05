@@ -50,8 +50,8 @@ SHIFT, CTRL and C= chosen with Cross hold for the next key (blue), as on the boa
 C= then SHIFT switches upper / lower case. SHIFT LOCK stays on until pressed again.
 RESTORE works too.
 
-**Menu** (Options): BACK TO THE C64, RESET C64, the joystick port, the volume, then the programs
-and disks. It opens on the program chosen last (or the first one). Choosing one restarts the C64
+**Menu** (Options): BACK TO THE C64, SID MUSIC PLAYER, RESET C64, the joystick port, the volume,
+QUIT TO THE PS5 HOME SCREEN (Cross twice), then the programs and disks. It opens on the program chosen last (or the first one). Choosing one restarts the C64
 and starts it:
 
 - a `.prg`: loaded straight into memory and RUN (as the board's AUTOSTART does)
@@ -77,13 +77,29 @@ shown and the player moves on when it ends (the next song, then the next tune); 
 | Cross | open the folder / play the tune |
 | Circle | up a folder (at the top: back to the C64) |
 | Square | pause |
-| Triangle | stop |
+| Triangle | the visuals (below), the next one, then back to the list |
+| Touchpad click | stop |
 | L1 / R1 | the tune's previous / next song |
 | L2 / R2 | the previous / next tune in the folder |
 | Options | back to the C64 |
 
 The screen shows the tune's title, author and release, the song and its time, the SID model, and
 for each voice its waveform, note and envelope level.
+
+**Visuals:** Triangle switches the player to full-screen visuals and on to the next one; Circle comes
+back to the list. Each follows the music (its channels' levels and notes, every new note, and the
+sound itself):
+
+- **Copper bars** - the Amiga's raster bars, one colour per channel, swinging on sines and flaring
+  with their channel, over a starfield, with a sine scroller of the tune's name, all mirrored in
+  rippling water
+- **Glenz vectors** - a see-through faceted glenz cube round a lit, solid gem, turning faster and
+  breathing with the music, over a warp starfield, each channel a glowing light in orbit
+- **Plasma** - a plasma whose colours follow the notes, the sound itself as a glowing oscilloscope
+  ring and line, sparks rising on new notes
+
+The song controls (pause, L1/R1, L2/R2) work there too. The visuals are `common/Visuals.h`, shared by
+both apps.
 
 **Music added later over FTP:** the PS5 won't let the app list a folder, so the player reads
 `music.txt`, the list the build makes with `tools/make_music_list.py`. Copy the tunes into

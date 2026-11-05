@@ -43,6 +43,7 @@ extern std::atomic<uint8_t> g_c64Joy[2];
 
 // ---- sound
 void ps5SoundSetVolume(int percent); // 0-100
+int ps5SoundRecent(int16_t *out, int n); // the last n samples made (oldest first)
 
 // ---- drive 8 (PS5File.cpp): the programs (.prg) and disks (.d64) there,
 // sorted by name

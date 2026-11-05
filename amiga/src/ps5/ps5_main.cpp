@@ -24,6 +24,7 @@
 #include "AmigaFont.h"
 #include "ModEngine.h"
 #include "MusicList.h"
+#include "Visuals.h"
 #include "ps5_sce.h"
 #include "ps5_system.h"
 
@@ -269,6 +270,9 @@ struct SpinLock {
 static ModEngine mod;
 static SpinLock modLock;
 static std::atomic<bool> modSound{false};
+// the MOD player's sound as it goes out, for its oscilloscope
+static int16_t modWave[2048];
+static std::atomic<int> modWaveHead{0};
 
 static void soundThread(void *) {
   static int16_t out[kGrain * 2];
@@ -278,6 +282,9 @@ static void soundThread(void *) {
       modLock.lock();
       mod.render(mono, kGrain);
       modLock.unlock();
+      int wh = modWaveHead.load(std::memory_order_relaxed);
+      for (int i = 0; i < kGrain; i++) modWave[(wh + i) & 2047] = mono[i];
+      modWaveHead.store((wh + kGrain) & 2047, std::memory_order_release);
       int vol = volumePct.load(std::memory_order_relaxed);
       for (int i = 0; i < kGrain; i++) out[2 * i] = out[2 * i + 1] = (int16_t)(mono[i] * vol / 100);
       if (audioPort < 0 || sceAudioOutOutput(audioPort, out) < 0) sceKernelUsleep(kGrain * 1000000 / 48000);
@@ -429,7 +436,7 @@ static void mouseFrame(bool active) {
   prevTouch = padTouch;
   prevTX = padTX;
   prevTY = padTY;
-  // the right stick: faster the further it goes
+  // the left stick: faster the further it goes
   auto stick = [](uint8_t v) {
     float f = (v - 128) / 127.0f, a = f < 0 ? -f : f;
     if (a < 0.15f) return 0.0f;
@@ -437,8 +444,8 @@ static void mouseFrame(bool active) {
     return (f < 0 ? -1.0f : 1.0f) * a * a * 9.0f;
   };
   if (active) {
-    dx += stick(padRX);
-    dy += stick(padRY);
+    dx += stick(padLX);
+    dy += stick(padLY);
   }
   mouseAccX += dx;
   mouseAccY += dy;
@@ -474,6 +481,10 @@ static int modPlaying = -1;
 static uint8_t *modData = nullptr; // the module playing (from the system)
 static char modMsg[80] = "";
 static const int kModRows = 20;
+static int modView = 0;        // 0 the list and channels, 1-3 a visual (Triangle)
+static Visuals modVisuals;
+static uint64_t modVisLast = 0;
+static int modPrevPeriod[ModEngine::MAX_CH], modPrevLevel[ModEngine::MAX_CH];
 
 static std::string modsPath() { return std::string(ps5AppDir()) + "/assets/amiga/mods/"; }
 static void *bigAlloc(size_t n) { return heap_caps_malloc(n, 0); }
@@ -589,7 +600,12 @@ static void modInput() {
     modClose();
     return;
   }
-  if (modCount > 0) {
+  if (pressed & RAW_TRIANGLE) modView = (modView + 1) % (1 + Visuals::COUNT);
+  if (modView > 0 && (pressed & RAW_CIRCLE)) {
+    modView = 0; // (back to the list)
+    pressed &= ~RAW_CIRCLE;
+  }
+  if (modCount > 0 && modView == 0) {
     if (repeating(up)) modSel = (modSel - 1 + modCount) % modCount;
     if (repeating(down)) modSel = (modSel + 1) % modCount;
     if (repeating(left)) modSel = modSel - kModRows < 0 ? 0 : modSel - kModRows;
@@ -597,7 +613,7 @@ static void modInput() {
     if (modSel < modTop) modTop = modSel;
     if (modSel >= modTop + kModRows) modTop = modSel - kModRows + 1;
   }
-  if ((pressed & RAW_CROSS) && modCount > 0) {
+  if ((pressed & RAW_CROSS) && modCount > 0 && modView == 0) {
     int i = modItems[modSel];
     if (modList[i].kind == 'D') modListFolder(modList[i].path, -1);
     else modPlay(i);
@@ -616,7 +632,7 @@ static void modInput() {
   }
   if (modPlaying >= 0) {
     if (pressed & RAW_SQUARE) mod.paused = !mod.paused;
-    if (pressed & RAW_TRIANGLE) modStop();
+    if (pressed & RAW_TOUCHPAD) modStop();
     if (pressed & (RAW_R1 | RAW_L1)) {
       int to = mod.position + ((pressed & RAW_R1) ? 1 : -1);
       if (to >= 0 && to < mod.songLength) {
@@ -741,14 +757,69 @@ static void drawModPlayer() {
   ctl(ICON_CROSS, nullptr, "play/open");
   ctl(ICON_CIRCLE, nullptr, "back");
   ctl(ICON_SQUARE, nullptr, "pause");
-  ctl(ICON_TRIANGLE, nullptr, "stop");
+  ctl(ICON_TRIANGLE, nullptr, "visuals");
+  ctl(ICON_CROSS, "PAD", "stop");
   ctl(ICON_CROSS, "L1 R1", "position");
   ctl(ICON_CROSS, "L2 R2", "module");
   ctl(ICON_CROSS, "OPT", "Amiga");
 }
 
+// The MOD player's visuals: the channels' levels, notes and new notes, and
+// the sound itself, given to the shared Visuals (common/Visuals.h)
+static void modGlyph(uint32_t *, int x, int y, char c, int scale, uint32_t col) {
+  char s1[2] = {c, 0};
+  text(x, y, s1, scale, col);
+}
+
+static void drawModVisuals() {
+  uint64_t now = ps5NowUs();
+  float dt = modVisLast ? (now - modVisLast) / 1e6f : 1 / 60.0f;
+  modVisLast = now;
+  VisInput in = {};
+  bool on = modPlaying >= 0 && mod.loaded();
+  in.channels = on ? (mod.channels < 8 ? mod.channels : 8) : 4;
+  for (int c = 0; c < in.channels; c++) {
+    const ModEngine::ChannelView &v = mod.view[c];
+    in.level[c] = on ? v.level / 127.0f : 0;
+    if (on && v.period > 0) {
+      float midi = 48 + 12 * log2f(428.0f / v.period); // (C-2, period 428, as note 48)
+      float p = (midi - 24) / 72.0f;
+      in.pitch[c] = p < 0.01f ? 0.01f : p > 1 ? 1 : p;
+    }
+    // a new note: the period changed, or the level jumped
+    in.hit[c] = on && ((v.period > 0 && v.period != modPrevPeriod[c]) || v.level > modPrevLevel[c] + 30);
+    modPrevPeriod[c] = v.period;
+    modPrevLevel[c] = v.level;
+  }
+  static int16_t wave[1024];
+  int wh = modWaveHead.load(std::memory_order_acquire);
+  for (int i = 0; i < 1024; i++) wave[i] = on ? modWave[(wh - 1024 + i) & 2047] : 0;
+  in.wave = wave;
+  in.waveN = 1024;
+  static char info[128], title[64];
+  if (on) {
+    const MusicEntry &e = modList[modPlaying];
+    snprintf(title, sizeof(title), "%s", mod.title[0] ? mod.title : e.name);
+    uint32_t secs = mod.playedSamples / ModEngine::RATE;
+    snprintf(info, sizeof(info), "%s  %d channels  -  position %02d/%02d  pattern %02d  -  %u:%02u", mod.format,
+             mod.channels, mod.position, mod.songLength, mod.pattern, (unsigned)(secs / 60), (unsigned)(secs % 60));
+    in.progress = mod.songLength ? (mod.position * 64 + mod.row) / (float)(mod.songLength * 64) : -1;
+  } else {
+    snprintf(title, sizeof(title), "Nothing playing");
+    snprintf(info, sizeof(info), "Circle: the list, to choose a module");
+    in.progress = -1;
+  }
+  in.title = title;
+  in.author = on ? mod.format : "";
+  in.info = info;
+  in.paused = mod.paused;
+  in.caption = "MOD PLAYER";
+  static const VisFont font = {modGlyph, 8, 16};
+  modVisuals.draw(g_frame, modView - 1, in, font, dt);
+}
+
 // ============================================================ the menu
-enum ItemKind { IT_RESUME, IT_MOD, IT_RESET, IT_VOLUME, IT_HEADER, IT_DISK, IT_NONE };
+enum ItemKind { IT_RESUME, IT_MOD, IT_RESET, IT_VOLUME, IT_QUIT, IT_HEADER, IT_DISK, IT_NONE };
 struct Item {
   ItemKind kind;
   std::string name;
@@ -757,6 +828,7 @@ static std::vector<Item> items;
 static bool menuOpen = false;
 static int menuSel = 0, menuTop = 0;
 static const int kMenuRows = 18;
+static bool quitArmed = false; // Quit chosen once: Cross again closes the app
 
 static void menuOpenNow() {
   items.clear();
@@ -764,6 +836,7 @@ static void menuOpenNow() {
   items.push_back({IT_MOD, ""});
   items.push_back({IT_RESET, ""});
   items.push_back({IT_VOLUME, ""});
+  items.push_back({IT_QUIT, ""});
   items.push_back({IT_HEADER, ""});
   for (auto &d : disks) items.push_back({IT_DISK, d});
   if (disks.empty()) items.push_back({IT_NONE, "(no .adf disks in the app)"});
@@ -797,7 +870,8 @@ static void menuInput() {
   }
   if (menuSel < menuTop) menuTop = menuSel;
   if (menuSel >= menuTop + kMenuRows) menuTop = menuSel - kMenuRows + 1;
-  if (menuSel <= 4) menuTop = 0;
+  if (menuSel <= 5) menuTop = 0;
+  if (items[menuSel].kind != IT_QUIT) quitArmed = false;
   Item &it = items[menuSel];
   if (it.kind == IT_VOLUME && (repeating(left) || repeating(right))) {
     int v = volumePct.load() + ((held & right) ? 10 : -10);
@@ -805,6 +879,15 @@ static void menuInput() {
   }
   if (pressed & (RAW_CIRCLE | RAW_OPTIONS)) {
     menuOpen = false;
+    quitArmed = false;
+    return;
+  }
+  if (it.kind == IT_QUIT && (pressed & RAW_CROSS)) {
+    if (quitArmed) {
+      volumePct.store(0);
+      sceSystemServiceLoadExec("exit", nullptr); // (the app closes)
+    }
+    quitArmed = true;
     return;
   }
   if (it.kind == IT_DISK && (pressed & (RAW_CROSS | RAW_SQUARE))) {
@@ -847,6 +930,7 @@ static void drawMenu() {
     switch (it.kind) {
     case IT_RESUME: snprintf(line, sizeof(line), "Back to the Amiga"); break;
     case IT_MOD: snprintf(line, sizeof(line), "MOD player"); break;
+    case IT_QUIT: snprintf(line, sizeof(line), quitArmed ? "Quit? Press X again" : "Quit to the PS5 home screen"); break;
     case IT_RESET: snprintf(line, sizeof(line), "Reset (Ctrl-Amiga-Amiga)"); break;
     case IT_VOLUME: snprintf(line, sizeof(line), "Volume               %3d%%", volumePct.load()); break;
     case IT_HEADER:
@@ -890,9 +974,9 @@ static void drawSides() {
   int x = 8, y = 300, step = 50;
   text(x + 20, y, "MOUSE", 2, kWbOrange);
   y += step;
-  text(x + 20, y, "TOUCHPAD OR", 2, kText);
+  text(x + 20, y, "LEFT STICK", 2, kText);
   y += 34;
-  text(x + 20, y, "RIGHT STICK", 2, kText);
+  text(x + 20, y, "OR TOUCHPAD", 2, kText);
   y += step;
   sideRow(x, y, ICON_SQUARE, nullptr, "LEFT");
   sideRow(x, y += step, ICON_CROSS, "R1 R2", "LEFT");
@@ -907,13 +991,13 @@ static void drawSides() {
   text(rx + 20, y, "PORT 2", 2, kDim);
   y += step;
   sideRow(rx, y, ICON_CROSS, "D-PAD", "MOVE");
-  sideRow(rx, y += step, ICON_CROSS, "STICK", "MOVE");
   sideRow(rx, y += step, ICON_CROSS, nullptr, "FIRE");
   y += step * 2;
   sideRow(rx, y, ICON_CROSS, "OPT", "MENU");
   y += 34;
   text(rx + 84, y += 20, "DISKS", 2, kDim);
-  text(rx + 84, y += 30, "RESET", 2, kDim);
+  text(rx + 84, y += 30, "MOD PLAYER", 2, kDim);
+  text(rx + 84, y += 30, "RESET, QUIT", 2, kDim);
   fullCopies = 2;
 }
 
@@ -1002,7 +1086,8 @@ int main() {
       // the MOD player has the TV (and the sound); the Amiga is paused
       modInput();
       if (modOpen) {
-        drawModPlayer();
+        if (modView > 0) drawModVisuals();
+        else drawModPlayer();
         fullCopies = 1;
       }
     } else if (running) {
@@ -1017,8 +1102,8 @@ int main() {
         mouseFrame(true);
         input_set_lmb((held & (RAW_R1 | RAW_R2 | RAW_SQUARE | RAW_TOUCHPAD)) ? 1 : 0);
         input_set_rmb((held & (RAW_L1 | RAW_L2 | RAW_CIRCLE)) ? 1 : 0);
-        input_set_joy((held & (RAW_UP | STICK_UP)) != 0, (held & (RAW_DOWN | STICK_DOWN)) != 0,
-                      (held & (RAW_LEFT | STICK_LEFT)) != 0, (held & (RAW_RIGHT | STICK_RIGHT)) != 0,
+        // the joystick: the D-pad (the left stick is the mouse)
+        input_set_joy((held & RAW_UP) != 0, (held & RAW_DOWN) != 0, (held & RAW_LEFT) != 0, (held & RAW_RIGHT) != 0,
                       (held & RAW_CROSS) != 0);
       }
       composePicture();

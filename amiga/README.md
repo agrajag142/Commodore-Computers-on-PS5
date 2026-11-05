@@ -41,15 +41,16 @@ The picture is the Amiga's 640 x 256 at 2 x 4 (1280 x 1024), the full height of 
 
 | DualSense | Amiga |
 | --- | --- |
-| Touchpad (slide, like a laptop's) or right stick | the mouse |
+| Left stick, or the touchpad (slide, like a laptop's) | the mouse |
 | Square, R1, R2 or a touchpad click | left mouse button |
 | Circle, L1 or L2 | right mouse button |
-| D-pad or left stick | joystick in port 2 |
+| D-pad | joystick in port 2 |
 | Cross | fire |
 | Options | the menu |
 
-Mouse and joystick work at the same time. **Menu** (Options): back to the Amiga, reset (with the
-disk in DF0: still in), the volume, and the disks: **Cross** restarts the Amiga with that disk in
+Mouse and joystick work at the same time. **Menu** (Options): back to the Amiga, the MOD player,
+reset (with the disk in DF0: still in), the volume, quit to the PS5 home screen (Cross twice), and
+the disks: **Cross** restarts the Amiga with that disk in
 DF0:, **Square** swaps it in without a restart (for a game's or demo's next disk - the old one comes
 out for half a second first, so the Amiga notices). The one in DF0: is orange. The Amiga keeps
 running behind the menu. The bottom left shows the disk in DF0: and the frames per second (50 is
@@ -71,7 +72,8 @@ ones (6CHN, 8CHN, xxCH).
 | Cross | open the folder / play the module |
 | Circle | up a folder (at the top: back to the Amiga) |
 | Square | pause |
-| Triangle | stop |
+| Triangle | the visuals (below), the next one, then back to the list |
+| Touchpad click | stop |
 | L1 / R1 | the song's previous / next position |
 | L2 / R2 | the previous / next module in the folder |
 | Options | back to the Amiga |
@@ -79,6 +81,21 @@ ones (6CHN, 8CHN, xxCH).
 The screen shows the module's title, format, channels and samples, the position, pattern, row,
 speed, tempo and time, and for each channel a scope, its level, note and sample. When a song comes
 back round to its start, the next module in the folder plays.
+
+**Visuals:** Triangle switches the player to full-screen visuals and on to the next one; Circle comes
+back to the list. Each follows the music (its channels' levels and notes, every new note, and the
+sound itself):
+
+- **Copper bars** - the Amiga's raster bars, one colour per channel, swinging on sines and flaring
+  with their channel, over a starfield, with a sine scroller of the tune's name, all mirrored in
+  rippling water
+- **Glenz vectors** - a see-through faceted glenz cube round a lit, solid gem, turning faster and
+  breathing with the music, over a warp starfield, each channel a glowing light in orbit
+- **Plasma** - a plasma whose colours follow the notes, the sound itself as a glowing oscilloscope
+  ring and line, sparks rising on new notes
+
+The song controls (pause, L1/R1, L2/R2) work there too. The visuals are `common/Visuals.h`, shared by
+both apps.
 
 **Modules added later over FTP:** copy them into `/data/homebrew/PPSA99905/assets/amiga/mods`, run
 `python3 tools/make_music_list.py` on a copy of that folder on your PC, and copy the new

@@ -7,7 +7,8 @@
 //                 shot-<frame>.ppm in the current folder)
 //   vblank        60 a second, from the clock; SIM_FRAMES=n stops after n
 //   controller    a script: SIM_PAD="120-125:4000;300-302:1000" holds those
-//                 buttons (the PS5's bits, hex) for those frames;
+//                 buttons (the PS5's bits, hex) for those frames ("200-260:0,255,128":
+//                 no buttons, the left stick right);
 //                 SIM_TOUCH="200-260:0.5,0.4" puts a finger on the touchpad
 //                 ("200-260:0.2,0.5>0.6,0.3" slides it from one place to the other)
 //   sound         AudioOut takes its time like the real one; SIM_WAV=file
@@ -50,6 +51,11 @@ extern "C" int sceKernelSendNotificationRequest(uint32_t, void *request, size_t,
 }
 extern "C" int sceKernelUsleep(uint32_t us) { return usleep(us); }
 extern "C" int sceSystemServiceHideSplashScreen() { return 0; }
+extern "C" int sceSystemServiceLoadExec(const char *path, const char **) {
+  fprintf(stderr, "SIM: LoadExec(\"%s\"): the app closes\n", path);
+  fflush(stderr);
+  _exit(0);
+}
 extern "C" int sceUserServiceInitialize(const void *) { return 0; }
 extern "C" int sceUserServiceGetInitialUser(int32_t *user) {
   *user = 1;
@@ -139,6 +145,7 @@ extern "C" int sceVideoOutWaitVblank(int32_t) {
 struct PadStep {
   long from, to;
   uint32_t buttons;
+  int lx, ly; // the left stick (0-255, 128 = the middle)
 };
 struct TouchStep {
   long from, to;
@@ -153,7 +160,8 @@ extern "C" int scePadInit() {
     size_t at = 0;
     while (at < all.size()) {
       PadStep p{};
-      sscanf(all.c_str() + at, "%ld-%ld:%x", &p.from, &p.to, &p.buttons);
+      p.lx = p.ly = 128;
+      sscanf(all.c_str() + at, "%ld-%ld:%x,%d,%d", &p.from, &p.to, &p.buttons, &p.lx, &p.ly);
       padScript.push_back(p);
       at = all.find(';', at);
       if (at == std::string::npos) break;
@@ -189,6 +197,8 @@ extern "C" int scePadRead(int32_t, void *data, int32_t) {
   s[2] = (b >> 16) & 0xff;
   s[3] = (b >> 24) & 0xff;
   s[4] = s[5] = s[6] = s[7] = 128;
+  for (auto &p : padScript)
+    if (f >= p.from && f <= p.to && (p.lx != 128 || p.ly != 128)) s[4] = (uint8_t)p.lx, s[5] = (uint8_t)p.ly;
   for (auto &t : touchScript)
     if (f >= t.from && f <= t.to) {
       s[52] = 1;

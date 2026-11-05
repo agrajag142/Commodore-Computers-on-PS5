@@ -29,6 +29,7 @@
 #include "MusicList.h"
 #include "P4KeyboardData.h"
 #include "P4SidEngine.h"
+#include "Visuals.h"
 #include "ps5_app.h"
 #include "ps5_sce.h"
 
@@ -601,7 +602,7 @@ static void drawToast() {
 }
 
 // ============================================================ the menu
-enum ItemKind { IT_RESUME, IT_SID, IT_RESET, IT_PORT, IT_VOLUME, IT_HEADER, IT_FILE, IT_NONE };
+enum ItemKind { IT_RESUME, IT_SID, IT_RESET, IT_PORT, IT_VOLUME, IT_QUIT, IT_HEADER, IT_FILE, IT_NONE };
 struct Item {
   ItemKind kind;
   std::string name;
@@ -612,6 +613,7 @@ static int volume = 80;
 static const int kMenuRows = 16;
 static std::string lastFile; // the program or disk chosen last
 static bool sidOpenRequested = false; // (the SID player is further down)
+static bool quitArmed = false;        // QUIT chosen once: Cross again closes the app
 
 static void menuOpenNow() {
   items.clear();
@@ -620,6 +622,7 @@ static void menuOpenNow() {
   items.push_back({IT_RESET, ""});
   items.push_back({IT_PORT, ""});
   items.push_back({IT_VOLUME, ""});
+  items.push_back({IT_QUIT, ""});
   items.push_back({IT_HEADER, "PROGRAMS AND DISKS"});
   std::vector<std::string> files = ps5ListC64Files();
   for (auto &f : files) items.push_back({IT_FILE, f});
@@ -684,7 +687,8 @@ static void menuInput() {
   }
   if (menuSel < menuTop) menuTop = menuSel;
   if (menuSel >= menuTop + kMenuRows) menuTop = menuSel - kMenuRows + 1;
-  if (menuSel <= 5) menuTop = 0;
+  if (menuSel <= 6) menuTop = 0;
+  if (items[menuSel].kind != IT_QUIT) quitArmed = false;
   if (menuTop > (int)items.size() - kMenuRows) menuTop = (int)items.size() > kMenuRows ? (int)items.size() - kMenuRows : 0;
   Item &it = items[menuSel];
   if (it.kind == IT_VOLUME && (repeating(left) || repeating(right))) {
@@ -696,10 +700,18 @@ static void menuInput() {
   if (it.kind == IT_PORT && (pressed & (left | right))) joyPort = 3 - joyPort;
   if (pressed & (RAW_CIRCLE | RAW_OPTIONS)) {
     menuOpen = false;
+    quitArmed = false;
     return;
   }
   if (pressed & RAW_CROSS) {
     switch (it.kind) {
+    case IT_QUIT:
+      if (quitArmed) {
+        ps5SoundSetVolume(0);
+        sceSystemServiceLoadExec("exit", nullptr); // (the app closes)
+      }
+      quitArmed = true;
+      break;
     case IT_RESUME: menuOpen = false; break;
     case IT_SID: sidOpenRequested = true; break;
     case IT_RESET:
@@ -740,6 +752,7 @@ static void drawMenu() {
     switch (it.kind) {
     case IT_RESUME: snprintf(line, sizeof(line), "BACK TO THE C64"); break;
     case IT_SID: snprintf(line, sizeof(line), "SID MUSIC PLAYER"); break;
+    case IT_QUIT: snprintf(line, sizeof(line), quitArmed ? "QUIT? PRESS X AGAIN" : "QUIT TO THE PS5 HOME SCREEN"); break;
     case IT_RESET: snprintf(line, sizeof(line), "RESET C64"); break;
     case IT_PORT: snprintf(line, sizeof(line), "JOYSTICK PORT        %d", joyPort); break;
     case IT_VOLUME: snprintf(line, sizeof(line), "VOLUME            %3d%%", volume); break;
@@ -844,6 +857,10 @@ static int sidPlaying = -1;                // the tune playing (index into music
 static char sidMsg[64] = "";
 static uint8_t sidFile[P4SidEngine::MAX_FILE];
 static const int kSidRows = 19;
+static int sidView = 0;        // 0 the list and voices, 1-3 a visual (Triangle)
+static Visuals sidVisuals;
+static uint64_t sidVisLast = 0;
+static uint8_t sidPrevGate[3];
 
 static std::string musicFolder() { return std::string(ps5AppDir()) + "/assets/c64/music/"; }
 
@@ -927,7 +944,12 @@ static void sidInput() {
     sidClose();
     return;
   }
-  if (sidCount > 0) {
+  if (pressed & RAW_TRIANGLE) sidView = (sidView + 1) % (1 + Visuals::COUNT);
+  if (sidView > 0 && (pressed & RAW_CIRCLE)) {
+    sidView = 0; // (back to the list)
+    pressed &= ~RAW_CIRCLE;
+  }
+  if (sidCount > 0 && sidView == 0) {
     if (repeating(up)) sidSel = (sidSel - 1 + sidCount) % sidCount;
     if (repeating(down)) sidSel = (sidSel + 1) % sidCount;
     if (repeating(left)) sidSel = sidSel - kSidRows < 0 ? 0 : sidSel - kSidRows;
@@ -935,7 +957,7 @@ static void sidInput() {
     if (sidSel < sidTop) sidTop = sidSel;
     if (sidSel >= sidTop + kSidRows) sidTop = sidSel - kSidRows + 1;
   }
-  if (pressed & RAW_CROSS) {
+  if ((pressed & RAW_CROSS) && sidView == 0) {
     if (sidCount > 0) {
       int i = sidItems[sidSel];
       if (music[i].kind == 'D') sidList(music[i].path, -1);
@@ -957,7 +979,7 @@ static void sidInput() {
   }
   if (sidPlaying >= 0) {
     if (pressed & RAW_SQUARE) eng.setPaused(!eng.isPaused());
-    if (pressed & RAW_TRIANGLE) {
+    if (pressed & RAW_TOUCHPAD) {
       eng.stop();
       sidPlaying = -1;
     }
@@ -1102,10 +1124,70 @@ static void drawSidPlayer() {
   ctl(ICON_CROSS, nullptr, "PLAY/OPEN");
   ctl(ICON_CIRCLE, nullptr, "BACK");
   ctl(ICON_SQUARE, nullptr, "PAUSE");
-  ctl(ICON_TRIANGLE, nullptr, "STOP");
+  ctl(ICON_TRIANGLE, nullptr, "VISUALS");
+  ctl(ICON_CROSS, "PAD", "STOP");
   ctl(ICON_CROSS, "L1 R1", "SONG");
   ctl(ICON_CROSS, "L2 R2", "TUNE");
   ctl(ICON_CROSS, "OPT", "C64");
+}
+
+// The SID player's visuals: the voices' envelopes, notes and new notes, and
+// the sound itself, given to the shared Visuals (common/Visuals.h)
+static void sidGlyph(uint32_t *, int x, int y, char c, int scale, uint32_t col) {
+  char s1[2] = {c, 0};
+  text(x, y, s1, scale, col);
+}
+
+static void drawSidVisuals() {
+  P4SidEngine &eng = P4SidEngine::get();
+  uint64_t now = ps5NowUs();
+  float dt = sidVisLast ? (now - sidVisLast) / 1e6f : 1 / 60.0f;
+  sidVisLast = now;
+  VisInput in = {};
+  in.channels = 3;
+  bool on = sidPlaying >= 0 && eng.isPlaying();
+  const SID &sid = cpu->sid;
+  for (int v = 0; v < 3; v++) {
+    uint8_t ctrl = sid.sidVoice[v].control;
+    in.level[v] = on ? sid.sidVoice[v].env / 255.0f : 0;
+    uint16_t freq = (uint16_t)(sid.sidreg[v * 7] | sid.sidreg[v * 7 + 1] << 8);
+    if (on && freq >= 100 && sid.sidVoice[v].env > 0) {
+      float midi = 69 + 12 * log2f(freq * (985248.0f / 16777216.0f) / 440.0f);
+      float p = (midi - 24) / 72.0f;
+      in.pitch[v] = p < 0.01f ? 0.01f : p > 1 ? 1 : p;
+    }
+    in.hit[v] = on && (ctrl & 1) && !(sidPrevGate[v] & 1); // the gate opened: a new note
+    sidPrevGate[v] = ctrl;
+  }
+  static int16_t wave[1024];
+  in.wave = wave;
+  in.waveN = ps5SoundRecent(wave, 1024);
+  static char info[96], title[64], author[64];
+  if (on) {
+    const SidTuneInfo &t = eng.tuneInfo();
+    const MusicEntry &e = music[sidPlaying];
+    snprintf(title, sizeof(title), "%s", t.name[0] ? t.name : e.name);
+    snprintf(author, sizeof(author), "%s", t.author);
+    uint32_t ms = eng.framesPlayed() * 20, len = MusicList::songLength(e, eng.currentSong());
+    char a[16], b[16];
+    timeText(ms, a, sizeof(a));
+    if (len) timeText(len, b, sizeof(b));
+    snprintf(info, sizeof(info), "%s  -  SONG %d OF %d  -  %s%s%s", author, eng.currentSong(), t.songs, a, len ? " / " : "",
+             len ? b : "");
+    in.progress = len ? (float)ms / len : -1;
+  } else {
+    snprintf(title, sizeof(title), "NOTHING PLAYING");
+    author[0] = 0;
+    snprintf(info, sizeof(info), "CIRCLE: THE LIST, TO CHOOSE A TUNE");
+    in.progress = -1;
+  }
+  in.title = title;
+  in.author = author;
+  in.info = info;
+  in.paused = eng.isPaused();
+  in.caption = "SID MUSIC";
+  static const VisFont font = {sidGlyph, 8, 8};
+  sidVisuals.draw(g_frame, sidView - 1, in, font, dt);
 }
 
 // ============================================================ once a frame
@@ -1232,7 +1314,8 @@ int main() {
 #endif
     cpu->vic.refresh(); // the newest finished C64 picture into g_c64Pixels
     if (sidOpen) {
-      drawSidPlayer();
+      if (sidView > 0) drawSidVisuals();
+      else drawSidPlayer();
       fullCopies = 1; // (the player has the whole TV)
     } else {
       composeC64();
