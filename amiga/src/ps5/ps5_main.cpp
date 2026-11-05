@@ -22,6 +22,8 @@
 #include "../core/chips/a500.h"
 #include "../stubs/esp_heap_caps.h"
 #include "AmigaFont.h"
+#include "ModEngine.h"
+#include "MusicList.h"
 #include "ps5_sce.h"
 #include "ps5_system.h"
 
@@ -229,6 +231,11 @@ static void emuThread(void *) {
   uint64_t statStart = next;
   int frames = 0;
   while (true) {
+    if (amigaPaused()) { // the MOD player is open
+      sceKernelUsleep(20000);
+      next = ps5NowUs();
+      continue;
+    }
     AmigaFrameTimes t;
     amigaRunFrame(&t);
     frames++;
@@ -250,9 +257,32 @@ static const int kGrain = 256;
 static int audioPort = -1;
 static std::atomic<int> volumePct{80};
 
+// The MOD player's engine; the sound thread renders it while the player is open
+struct SpinLock {
+  std::atomic_flag f = ATOMIC_FLAG_INIT;
+  void lock() {
+    while (f.test_and_set(std::memory_order_acquire)) {
+    }
+  }
+  void unlock() { f.clear(std::memory_order_release); }
+};
+static ModEngine mod;
+static SpinLock modLock;
+static std::atomic<bool> modSound{false};
+
 static void soundThread(void *) {
   static int16_t out[kGrain * 2];
+  static int16_t mono[kGrain];
   while (true) {
+    if (modSound.load(std::memory_order_acquire)) {
+      modLock.lock();
+      mod.render(mono, kGrain);
+      modLock.unlock();
+      int vol = volumePct.load(std::memory_order_relaxed);
+      for (int i = 0; i < kGrain; i++) out[2 * i] = out[2 * i + 1] = (int16_t)(mono[i] * vol / 100);
+      if (audioPort < 0 || sceAudioOutOutput(audioPort, out) < 0) sceKernelUsleep(kGrain * 1000000 / 48000);
+      continue;
+    }
     // too far behind the emulator (its clock and the sound's drift apart a
     // little): skip ahead, so the delay stays short (about 50 ms)
     int avail = paula_ring_avail();
@@ -426,8 +456,299 @@ static void mouseFrame(bool active) {
   if (ix || iy) input_mouse_move(ix, iy);
 }
 
+static int fullCopies = 2; // the sides changed: both scanout buffers need them
+static void drawSides();
+
+// ============================================================ the MOD player
+// A screen of its own (the menu's MOD player), as on the board: the Amiga
+// pauses and the modules in the app's assets/amiga/mods folder play through
+// the board's ProTracker replayer (ModEngine). They are listed by music.txt
+// (tools/make_music_list.py: a PS5 app can't list a folder).
+static bool modOpen = false;
+static MusicList modList;
+static bool modTried = false, modListLoaded = false;
+static std::string modFolder;
+static int modItems[65536];
+static int modCount = 0, modSel = 0, modTop = 0;
+static int modPlaying = -1;
+static uint8_t *modData = nullptr; // the module playing (from the system)
+static char modMsg[80] = "";
+static const int kModRows = 20;
+
+static std::string modsPath() { return std::string(ps5AppDir()) + "/assets/amiga/mods/"; }
+static void *bigAlloc(size_t n) { return heap_caps_malloc(n, 0); }
+
+static void modListFolder(const std::string &folder, int select) {
+  modFolder = folder;
+  int n = modListLoaded ? modList.children(folder.c_str(), modItems, 65536) : 0;
+  modCount = 0;
+  for (int i = 0; i < n; i++) // (folders and modules: SID tunes are the C64's)
+    if (modList[modItems[i]].kind != 'S') modItems[modCount++] = modItems[i];
+  modSel = 0;
+  for (int i = 0; i < modCount; i++)
+    if (modItems[i] == select) modSel = i;
+  modTop = modSel < kModRows ? 0 : modSel - kModRows / 2;
+}
+
+static void modOpenNow() {
+  if (!modTried) {
+    modTried = true;
+    modListLoaded = modList.load((modsPath() + "music.txt").c_str(), bigAlloc, heap_caps_free);
+  }
+  if (modCount == 0) modListFolder("", -1);
+  amigaPause(true);
+  modSound.store(true, std::memory_order_release);
+  modOpen = true;
+  fullCopies = 2;
+}
+
+static void modStop() {
+  modLock.lock();
+  mod.unload();
+  modLock.unlock();
+  if (modData) heap_caps_free(modData);
+  modData = nullptr;
+  modPlaying = -1;
+}
+
+static void modClose() {
+  modStop();
+  modSound.store(false, std::memory_order_release);
+  amigaPause(false);
+  amigaMarkAllDirty();
+  modOpen = false;
+  drawSides();
+}
+
+static void modPlay(int index) {
+  const MusicEntry &e = modList[index];
+  FILE *f = fopen((modsPath() + e.path).c_str(), "rb");
+  if (!f) {
+    snprintf(modMsg, sizeof(modMsg), "Cannot open %.60s", e.name);
+    return;
+  }
+  fseek(f, 0, SEEK_END);
+  long size = ftell(f);
+  fseek(f, 0, SEEK_SET);
+  if (size <= 0 || size > (8l << 20)) {
+    fclose(f);
+    snprintf(modMsg, sizeof(modMsg), "Too big (8 MB at most): %.50s", e.name);
+    return;
+  }
+  uint8_t *data = (uint8_t *)heap_caps_malloc((size_t)size, 0);
+  size_t got = data ? fread(data, 1, (size_t)size, f) : 0;
+  fclose(f);
+  if (!data || got != (size_t)size) {
+    if (data) heap_caps_free(data);
+    snprintf(modMsg, sizeof(modMsg), "Cannot read %.60s", e.name);
+    return;
+  }
+  modLock.lock();
+  const char *err = mod.load(data, got);
+  modLock.unlock();
+  if (modData) heap_caps_free(modData); // (the engine has let go of it)
+  modData = data;
+  if (err) {
+    snprintf(modMsg, sizeof(modMsg), "%s", err);
+    modLock.lock();
+    mod.unload();
+    modLock.unlock();
+    heap_caps_free(modData);
+    modData = nullptr;
+    modPlaying = -1;
+    return;
+  }
+  modMsg[0] = 0;
+  modPlaying = index;
+}
+
+static int modNeighbour(int index, int dir) {
+  const MusicEntry &e = modList[index];
+  static int around[65536];
+  std::string folder(e.parent, (size_t)e.parentLen);
+  int n = modList.children(folder.c_str(), around, 65536);
+  for (int i = 0; i < n; i++) {
+    if (around[i] != index) continue;
+    for (int j = i + dir; j >= 0 && j < n; j += dir)
+      if (modList[around[j]].kind == 'M') return around[j];
+  }
+  return -1;
+}
+
+static void modNext(int dir) {
+  if (modPlaying < 0) return;
+  int n = modNeighbour(modPlaying, dir);
+  if (n >= 0) modPlay(n);
+  else modStop();
+}
+
+static void modInput() {
+  const uint32_t up = RAW_UP | STICK_UP, down = RAW_DOWN | STICK_DOWN, left = RAW_LEFT | STICK_LEFT,
+                 right = RAW_RIGHT | STICK_RIGHT;
+  if (pressed & RAW_OPTIONS) {
+    modClose();
+    return;
+  }
+  if (modCount > 0) {
+    if (repeating(up)) modSel = (modSel - 1 + modCount) % modCount;
+    if (repeating(down)) modSel = (modSel + 1) % modCount;
+    if (repeating(left)) modSel = modSel - kModRows < 0 ? 0 : modSel - kModRows;
+    if (repeating(right)) modSel = modSel + kModRows >= modCount ? modCount - 1 : modSel + kModRows;
+    if (modSel < modTop) modTop = modSel;
+    if (modSel >= modTop + kModRows) modTop = modSel - kModRows + 1;
+  }
+  if ((pressed & RAW_CROSS) && modCount > 0) {
+    int i = modItems[modSel];
+    if (modList[i].kind == 'D') modListFolder(modList[i].path, -1);
+    else modPlay(i);
+  }
+  if (pressed & RAW_CIRCLE) {
+    if (modFolder.empty()) {
+      modClose();
+      return;
+    }
+    size_t slash = modFolder.rfind('/');
+    std::string upF = slash == std::string::npos ? "" : modFolder.substr(0, slash);
+    int was = -1;
+    for (int i = 0; i < modList.size(); i++)
+      if (modList[i].kind == 'D' && modFolder == modList[i].path) was = i;
+    modListFolder(upF, was);
+  }
+  if (modPlaying >= 0) {
+    if (pressed & RAW_SQUARE) mod.paused = !mod.paused;
+    if (pressed & RAW_TRIANGLE) modStop();
+    if (pressed & (RAW_R1 | RAW_L1)) {
+      int to = mod.position + ((pressed & RAW_R1) ? 1 : -1);
+      if (to >= 0 && to < mod.songLength) {
+        modLock.lock();
+        mod.setPosition(to);
+        modLock.unlock();
+      }
+    }
+    if (pressed & RAW_R2) modNext(1);
+    if (pressed & RAW_L2) modNext(-1);
+    // the end of the song: the next module in the folder
+    if (modPlaying >= 0 && mod.ended) modNext(1);
+  }
+}
+
+static void drawModPlayer() {
+  char line[96];
+  fillRect(0, 0, kW, kH, kWbBlue);
+  // a Workbench window over the whole TV
+  frameRect(24, 24, kW - 48, kH - 48, 4, kWbWhite);
+  fillRect(24, 24, kW - 48, 44, kWbWhite);
+  text(44, 30, "MOD Player", 2, kWbBlue);
+  text(kW - 44 - textWidth("Amiga 500 on PS5", 2), 30, "Amiga 500 on PS5", 2, kWbBlue);
+
+  // ---- left: the folder and what is in it
+  snprintf(line, sizeof(line), "/%.44s", modFolder.c_str());
+  text(60, 96, line, 2, kWbOrange);
+  int lx = 60, ly = 146, rowH = 40;
+  if (!modListLoaded) {
+    text(lx, ly, "No modules in the app.", 2, kWbWhite);
+    text(lx, ly + 40, "Put them in amiga/assets/amiga/mods", 2, kWbWhite);
+    text(lx, ly + 80, "and build again.", 2, kWbWhite);
+  } else if (modCount == 0) {
+    text(lx, ly, "(empty)", 2, kWbWhite);
+  }
+  for (int r = 0; r < kModRows && modTop + r < modCount; r++) {
+    int i = modItems[modTop + r];
+    const MusicEntry &e = modList[i];
+    if (e.kind == 'D') snprintf(line, sizeof(line), "%.44s/", e.name);
+    else snprintf(line, sizeof(line), "%.45s", e.title[0] ? e.title : e.name);
+    int y = ly + r * rowH;
+    uint32_t col = i == modPlaying ? kWbOrange : e.kind == 'D' ? kWbBlack : kWbWhite;
+    if (modTop + r == modSel) {
+      fillRect(lx - 10, y - 4, 860, rowH - 4, kWbOrange);
+      col = kWbBlack;
+    }
+    text(lx, y, line, 2, col);
+  }
+  if (modCount > kModRows) {
+    snprintf(line, sizeof(line), "%d-%d of %d", modTop + 1, modTop + kModRows < modCount ? modTop + kModRows : modCount,
+             modCount);
+    text(lx, ly + kModRows * rowH + 4, line, 1, kWbWhite);
+  }
+
+  // ---- right: what is playing
+  int rx = 960, ry = 96;
+  fillRect(rx - 30, 90, 4, 880, kWbWhite);
+  if (modPlaying < 0 || !mod.loaded()) {
+    text(rx, ry, "Nothing playing", 3, kWbWhite);
+    text(rx, ry + 60, "Choose a module on the left", 2, kWbWhite);
+  } else {
+    const MusicEntry &e = modList[modPlaying];
+    text(rx, ry, mod.title[0] ? mod.title : e.name, 3, kWbWhite);
+    snprintf(line, sizeof(line), "%.40s", e.name);
+    text(rx, ry + 54, line, 1, kWbBlack);
+    snprintf(line, sizeof(line), "%s  %d channels  %d samples", mod.format, mod.channels, mod.numSamples());
+    text(rx, ry + 80, line, 2, kWbWhite);
+    uint32_t secs = mod.playedSamples / ModEngine::RATE;
+    snprintf(line, sizeof(line), "Position %02d/%02d   Pattern %02d   Row %02d", mod.position, mod.songLength,
+             mod.pattern, mod.row);
+    text(rx, ry + 124, line, 2, kWbWhite);
+    snprintf(line, sizeof(line), "Speed %d   Tempo %d   %u:%02u%s", mod.speed, mod.tempo, (unsigned)(secs / 60),
+             (unsigned)(secs % 60), mod.paused ? "   PAUSED" : "");
+    text(rx, ry + 164, line, 2, mod.paused ? kWbOrange : kWbWhite);
+    // the song's progress (by position)
+    int bw = 880;
+    frameRect(rx, ry + 210, bw, 18, 2, kWbWhite);
+    if (mod.songLength > 0)
+      fillRect(rx + 4, ry + 214, (bw - 8) * (mod.position * 64 + mod.row) / (mod.songLength * 64), 10, kWbOrange);
+
+    // ---- the channels: a scope, the level, the note and sample
+    int nch = mod.channels < ModEngine::MAX_CH ? mod.channels : ModEngine::MAX_CH;
+    int cw = 210, chh = nch > 4 ? 220 : 300;
+    for (int c = 0; c < nch; c++) {
+      int cx = rx + (c % 4) * (cw + 14), cy = ry + 260 + (c / 4) * (chh + 40);
+      const ModEngine::ChannelView &v = mod.view[c];
+      fillRect(cx, cy, cw, chh, kWbBlack);
+      frameRect(cx, cy, cw, chh, 2, kWbWhite);
+      // the scope: the last samples played, oldest first
+      int sh = chh - 70, mid = cy + 8 + sh / 2, prevY = mid;
+      for (int k = 0; k < ModEngine::SCOPE_N && k < cw - 10; k++) {
+        int sv = v.scope[(v.scopePos + k) % ModEngine::SCOPE_N];
+        int y = mid - sv * (sh / 2 - 2) / 128;
+        int y0 = prevY < y ? prevY : y, y1 = prevY < y ? y : prevY;
+        fillRect(cx + 5 + k * (cw - 10) / ModEngine::SCOPE_N, y0, 2, y1 - y0 + 2, kWbOrange);
+        prevY = y;
+      }
+      // the level
+      fillRect(cx + 6, cy + chh - 54, (cw - 12) * v.level / 127, 10, kWbWhite);
+      char note[4];
+      ModEngine::noteName(v.period, note);
+      snprintf(line, sizeof(line), "%d %s %02d", c + 1, note, v.sample);
+      text(cx + 8, cy + chh - 36, line, 2, kWbWhite);
+    }
+  }
+  if (modMsg[0]) text(rx, 900, modMsg, 2, kWbOrange);
+
+  // ---- the controls, along the bottom
+  int by = 1000, x = 60;
+  auto ctl = [&](Icon ic, const char *btn, const char *what) {
+    int bw;
+    if (btn) {
+      bw = textWidth(btn, 1) + 10;
+      buttonLabel(btn, x + bw / 2, by + 16);
+    } else {
+      bw = 28;
+      icon(ic, x + 14, by + 16, 26);
+    }
+    text(x + bw + 10, by, what, 2, kWbWhite);
+    x += bw + 10 + textWidth(what, 2) + 44;
+  };
+  ctl(ICON_CROSS, nullptr, "play/open");
+  ctl(ICON_CIRCLE, nullptr, "back");
+  ctl(ICON_SQUARE, nullptr, "pause");
+  ctl(ICON_TRIANGLE, nullptr, "stop");
+  ctl(ICON_CROSS, "L1 R1", "position");
+  ctl(ICON_CROSS, "L2 R2", "module");
+  ctl(ICON_CROSS, "OPT", "Amiga");
+}
+
 // ============================================================ the menu
-enum ItemKind { IT_RESUME, IT_RESET, IT_VOLUME, IT_HEADER, IT_DISK, IT_NONE };
+enum ItemKind { IT_RESUME, IT_MOD, IT_RESET, IT_VOLUME, IT_HEADER, IT_DISK, IT_NONE };
 struct Item {
   ItemKind kind;
   std::string name;
@@ -440,6 +761,7 @@ static const int kMenuRows = 18;
 static void menuOpenNow() {
   items.clear();
   items.push_back({IT_RESUME, ""});
+  items.push_back({IT_MOD, ""});
   items.push_back({IT_RESET, ""});
   items.push_back({IT_VOLUME, ""});
   items.push_back({IT_HEADER, ""});
@@ -475,7 +797,7 @@ static void menuInput() {
   }
   if (menuSel < menuTop) menuTop = menuSel;
   if (menuSel >= menuTop + kMenuRows) menuTop = menuSel - kMenuRows + 1;
-  if (menuSel <= 3) menuTop = 0;
+  if (menuSel <= 4) menuTop = 0;
   Item &it = items[menuSel];
   if (it.kind == IT_VOLUME && (repeating(left) || repeating(right))) {
     int v = volumePct.load() + ((held & right) ? 10 : -10);
@@ -494,6 +816,10 @@ static void menuInput() {
   }
   if (pressed & RAW_CROSS) {
     if (it.kind == IT_RESUME) menuOpen = false;
+    if (it.kind == IT_MOD) {
+      menuOpen = false;
+      modOpenNow();
+    }
     if (it.kind == IT_RESET) {
       if (!diskInDrive.empty()) requestDisk(diskInDrive, true); // (a restart with the disk in)
       else amigaRequestReset();
@@ -520,6 +846,7 @@ static void drawMenu() {
     uint32_t col = kWbWhite;
     switch (it.kind) {
     case IT_RESUME: snprintf(line, sizeof(line), "Back to the Amiga"); break;
+    case IT_MOD: snprintf(line, sizeof(line), "MOD player"); break;
     case IT_RESET: snprintf(line, sizeof(line), "Reset (Ctrl-Amiga-Amiga)"); break;
     case IT_VOLUME: snprintf(line, sizeof(line), "Volume               %3d%%", volumePct.load()); break;
     case IT_HEADER:
@@ -548,7 +875,6 @@ static void drawMenu() {
 }
 
 // ============================================================ the sides
-static int fullCopies = 2;
 static void sideRow(int x, int y, Icon ic, const char *btn, const char *what) {
   if (btn) buttonLabel(btn, x + 40, y + 16);
   else icon(ic, x + 40, y + 16, 26);
@@ -635,6 +961,7 @@ int main() {
   sceSystemServiceHideSplashScreen();
 
   diskBuf = (uint8_t *)heap_caps_malloc(901120, 0);
+  soundStart(); // (Paula's ring stays empty without a Kickstart: silence; the MOD player still plays)
   std::string err = AmigaFiles::loadKickstart(kickRom);
   if (err.empty()) {
     // the disk at start-up: default.adf, else the first one
@@ -656,7 +983,6 @@ int main() {
     AmigaOutput out = {picture, 640, 0, 0, nullptr};
     amigaMicros = [] { return (int64_t)ps5NowUs(); };
     if (amigaCoreInit(chipRam, slowRam, kickRom, out)) {
-      soundStart();
       ps5StartThread(emuThread, nullptr, 1024 * 1024);
       running = true;
     } else {
@@ -672,7 +998,14 @@ int main() {
     pressed = held & ~prevHeld;
     prevHeld = held;
 
-    if (running) {
+    if (modOpen) {
+      // the MOD player has the TV (and the sound); the Amiga is paused
+      modInput();
+      if (modOpen) {
+        drawModPlayer();
+        fullCopies = 1;
+      }
+    } else if (running) {
       if (menuOpen) {
         menuInput();
         mouseFrame(false);
@@ -694,6 +1027,9 @@ int main() {
     } else {
       showMessage("NO KICKSTART", err, "Put kick.rom (Kickstart 1.3, 256K) in amiga/assets/amiga",
                   "and build the app again - see amiga/README.md");
+      text(kPicX + (1280 - textWidth("Options: the MOD player", 2)) / 2, kPicY + 680, "Options: the MOD player", 2,
+           kWbOrange);
+      if (pressed & RAW_OPTIONS) modOpenNow(); // (it needs no Kickstart)
     }
 
     int back = shown ^ 1;

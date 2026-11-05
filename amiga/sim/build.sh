@@ -13,7 +13,7 @@ here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 src=$here/../src
 out=$here/out
 mkdir -p "$out/obj"
-common=(-O2 -DARDUINO -DPS5_SIM -I"$src/stubs" -pthread -w)
+common=(-O2 -DARDUINO -DPS5_SIM -I"$src/stubs" -I"$here/../../common" -pthread -w)
 objs=()
 while IFS= read -r -d '' f; do
     o=$out/obj/$(echo "${f#$src/}" | tr '/' '_').o

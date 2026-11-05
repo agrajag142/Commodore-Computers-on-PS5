@@ -55,6 +55,35 @@ out for half a second first, so the Amiga notices). The one in DF0: is orange. T
 running behind the menu. The bottom left shows the disk in DF0: and the frames per second (50 is
 full speed).
 
+## MOD player
+
+**MOD player** in the menu (Options) opens the board's ProTracker replayer as a screen of its own:
+the Amiga pauses and carries on afterwards. It needs no Kickstart: without one, Options opens it
+from the NO KICKSTART screen.
+
+Put modules in `amiga/assets/amiga/mods` before building (`.mod`, `mod.*`, `.nst`, `.stk`, folders
+inside are fine, up to 8 MB each): 4-channel ProTracker / Soundtracker modules and 2-8 channel
+ones (6CHN, 8CHN, xxCH).
+
+| DualSense | |
+| --- | --- |
+| D-pad up / down (left / right a page) | choose a folder or module |
+| Cross | open the folder / play the module |
+| Circle | up a folder (at the top: back to the Amiga) |
+| Square | pause |
+| Triangle | stop |
+| L1 / R1 | the song's previous / next position |
+| L2 / R2 | the previous / next module in the folder |
+| Options | back to the Amiga |
+
+The screen shows the module's title, format, channels and samples, the position, pattern, row,
+speed, tempo and time, and for each channel a scope, its level, note and sample. When a song comes
+back round to its start, the next module in the folder plays.
+
+**Modules added later over FTP:** copy them into `/data/homebrew/PPSA99905/assets/amiga/mods`, run
+`python3 tools/make_music_list.py` on a copy of that folder on your PC, and copy the new
+`music.txt` there too (the PS5 won't let the app list a folder).
+
 ## What's in here
 
 | | |
@@ -66,6 +95,8 @@ full speed).
 | `src/ps5/ps5_system.cpp` | memory (`mmap`: a PS5 app's malloc heap is small), threads, the clock |
 | `src/ps5/AmigaFilesPS5.cpp` | the Kickstart (and Amiga Forever's encryption) and the disks, from `assets/amiga` |
 | `src/ps5/AmigaFont.h` | the board's 8 x 16 font |
+| `src/ps5/ModEngine.*` | the board's ProTracker replayer (at 48 kHz here) |
+| `../common/MusicList.h` | the music players' list (`music.txt`), shared with the C64; `build.sh` copies it in |
 | `sce_sys/` | `param.json` and the icon |
 | `sim/` | the PC simulator (the C64's stand-ins, `c64/sim/sim_sce.cpp`) |
 | `tools/testrom.s` | a tiny test "Kickstart" for the simulator (below) |
@@ -93,7 +124,6 @@ colour with the mouse buttons and the joystick. It boots nothing else.
 
 - A keyboard (the emulator has none yet).
 - Custom-loader disks: standard AmigaDOS disks work; many games load with their own track loaders.
-- The MOD player from the board.
 - 50 frames a second on a 60 Hz TV: one picture in five is shown twice.
 
 ## Licence

@@ -87,6 +87,17 @@ shopt -u nullglob nocaseglob
 printf '%s\n' "${files[@]}" | sort -f > "$kit/c64/assets/c64/files.txt"
 echo "Programs and disks in the app: ${#files[@]}"
 [[ ${#files[@]} -gt 0 ]] || echo "  (none: put .prg and .d64 files in c64/assets/c64)"
+# the music player's SID tunes (assets/c64/music, any folders inside) and
+# their list, music.txt (tools/make_music_list.py; with HVSC's Songlengths.md5
+# in the folder, the SID tunes' lengths too)
+cp "$repo/common/"*.h "$kit/c64/src/ps5/"
+if [[ -d $here/assets/c64/music ]]; then
+    mkdir -p "$kit/c64/assets/c64/music"
+    cp -r "$here/assets/c64/music/." "$kit/c64/assets/c64/music/"
+    find "$kit/c64/assets/c64/music" -name 'README*' -delete
+    python3 "$repo/tools/make_music_list.py" "$kit/c64/assets/c64/music"
+    find "$kit/c64/assets/c64/music" -name 'Songlengths.md5' -delete   # (only the PC tool needs it)
+fi
 bash "$kit/tools/validate-assets.sh" "$kit/c64/sce_sys"
 
 # 3. Build. The kit compiles every .c/.cpp under c64/src.

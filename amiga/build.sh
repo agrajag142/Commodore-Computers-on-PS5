@@ -89,6 +89,17 @@ roms=$(printf '%s\n' "${files[@]}" | grep -ciE '\.(rom|a500)$' || true)
 adfs=$(printf '%s\n' "${files[@]}" | grep -ciE '\.adf$' || true)
 echo "Kickstart ROMs in the app: $roms, disks: $adfs"
 [[ $roms -gt 0 ]] || echo "  (no Kickstart: the app will say so - put kick.rom in amiga/assets/amiga)"
+# the music player's modules (assets/amiga/mods, any folders inside) and
+# their list, music.txt (tools/make_music_list.py; with HVSC's Songlengths.md5
+# in the folder, the SID tunes' lengths too)
+cp "$repo/common/"*.h "$kit/amiga/src/ps5/"
+if [[ -d $here/assets/amiga/mods ]]; then
+    mkdir -p "$kit/amiga/assets/amiga/mods"
+    cp -r "$here/assets/amiga/mods/." "$kit/amiga/assets/amiga/mods/"
+    find "$kit/amiga/assets/amiga/mods" -name 'README*' -delete
+    python3 "$repo/tools/make_music_list.py" "$kit/amiga/assets/amiga/mods"
+    find "$kit/amiga/assets/amiga/mods" -name 'Songlengths.md5' -delete   # (only the PC tool needs it)
+fi
 bash "$kit/tools/validate-assets.sh" "$kit/amiga/sce_sys"
 
 # 3. Build. The kit compiles every .c/.cpp under amiga/src; the emulator is

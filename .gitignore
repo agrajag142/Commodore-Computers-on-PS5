@@ -16,3 +16,11 @@
 !/amiga/assets/amiga/README.md
 /amiga/sim/out/
 /amiga/sim/run/
+
+# the music players' folders: your music stays out too (only their READMEs are kept)
+!/c64/assets/c64/music/
+/c64/assets/c64/music/*
+!/c64/assets/c64/music/README.md
+!/amiga/assets/amiga/mods/
+/amiga/assets/amiga/mods/*
+!/amiga/assets/amiga/mods/README.md

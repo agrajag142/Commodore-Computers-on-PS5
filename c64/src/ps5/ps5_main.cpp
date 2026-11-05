@@ -26,7 +26,9 @@
 #include "../core/platform/PlatformFactory.h"
 #include "../core/platform/PlatformManager.h"
 #include "../core/roms/charset.h"
+#include "MusicList.h"
 #include "P4KeyboardData.h"
+#include "P4SidEngine.h"
 #include "ps5_app.h"
 #include "ps5_sce.h"
 
@@ -560,6 +562,8 @@ static void emulatorStart() {
   cpu = new (cpuStore) C64Sys();
   static uint8_t ram[1 << 16];
   cpu->init(ram, charset_rom);
+  // the SID player's engine: it takes its copy of the C64 just after start-up
+  P4SidEngine::get().attach(cpu);
   ps5StartThread(cpuThread, nullptr, 1024 * 1024);
   // the keyboard scan every 8 ms and the CIAs' clocks every 100 ms, as on the board
   PlatformManager::getInstance().startIntervalTimer([] { cpu->scanKeyboard(); }, 8000);
@@ -597,7 +601,7 @@ static void drawToast() {
 }
 
 // ============================================================ the menu
-enum ItemKind { IT_RESUME, IT_RESET, IT_PORT, IT_VOLUME, IT_HEADER, IT_FILE, IT_NONE };
+enum ItemKind { IT_RESUME, IT_SID, IT_RESET, IT_PORT, IT_VOLUME, IT_HEADER, IT_FILE, IT_NONE };
 struct Item {
   ItemKind kind;
   std::string name;
@@ -607,10 +611,12 @@ static int menuSel = 0, menuTop = 0;
 static int volume = 80;
 static const int kMenuRows = 16;
 static std::string lastFile; // the program or disk chosen last
+static bool sidOpenRequested = false; // (the SID player is further down)
 
 static void menuOpenNow() {
   items.clear();
   items.push_back({IT_RESUME, ""});
+  items.push_back({IT_SID, ""});
   items.push_back({IT_RESET, ""});
   items.push_back({IT_PORT, ""});
   items.push_back({IT_VOLUME, ""});
@@ -678,7 +684,7 @@ static void menuInput() {
   }
   if (menuSel < menuTop) menuTop = menuSel;
   if (menuSel >= menuTop + kMenuRows) menuTop = menuSel - kMenuRows + 1;
-  if (menuSel <= 4) menuTop = 0;
+  if (menuSel <= 5) menuTop = 0;
   if (menuTop > (int)items.size() - kMenuRows) menuTop = (int)items.size() > kMenuRows ? (int)items.size() - kMenuRows : 0;
   Item &it = items[menuSel];
   if (it.kind == IT_VOLUME && (repeating(left) || repeating(right))) {
@@ -695,6 +701,7 @@ static void menuInput() {
   if (pressed & RAW_CROSS) {
     switch (it.kind) {
     case IT_RESUME: menuOpen = false; break;
+    case IT_SID: sidOpenRequested = true; break;
     case IT_RESET:
       pushCmd(ExtCmd::DETACHD64);
       pushCmd(ExtCmd::RESET);
@@ -732,6 +739,7 @@ static void drawMenu() {
     char line[64];
     switch (it.kind) {
     case IT_RESUME: snprintf(line, sizeof(line), "BACK TO THE C64"); break;
+    case IT_SID: snprintf(line, sizeof(line), "SID MUSIC PLAYER"); break;
     case IT_RESET: snprintf(line, sizeof(line), "RESET C64"); break;
     case IT_PORT: snprintf(line, sizeof(line), "JOYSTICK PORT        %d", joyPort); break;
     case IT_VOLUME: snprintf(line, sizeof(line), "VOLUME            %3d%%", volume); break;
@@ -820,6 +828,286 @@ static void drawSides() {
   fullCopies = 2;
 }
 
+// ============================================================ the SID music player
+// A screen of its own (the menu's SID MUSIC PLAYER): the tunes in the app's
+// assets/c64/music folder, listed by music.txt (tools/make_music_list.py: a
+// PS5 app can't list a folder), played on the emulated C64 by the board's
+// P4SidEngine. Opening it saves the C64 as it is; closing it puts it back,
+// so a game carries on where it was.
+static bool sidOpen = false;
+static MusicList music;
+static bool musicTried = false, musicLoaded = false;
+static std::string sidFolder;              // the folder shown ("" = the top)
+static int sidItems[65536];                // what is in it: indices into music
+static int sidCount = 0, sidSel = 0, sidTop = 0;
+static int sidPlaying = -1;                // the tune playing (index into music)
+static char sidMsg[64] = "";
+static uint8_t sidFile[P4SidEngine::MAX_FILE];
+static const int kSidRows = 19;
+
+static std::string musicFolder() { return std::string(ps5AppDir()) + "/assets/c64/music/"; }
+
+static void sidList(const std::string &folder, int select) {
+  sidFolder = folder;
+  int n = musicLoaded ? music.children(folder.c_str(), sidItems, 65536) : 0;
+  sidCount = 0;
+  for (int i = 0; i < n; i++) // (folders and SID tunes: modules are the Amiga's)
+    if (music[sidItems[i]].kind != 'M') sidItems[sidCount++] = sidItems[i];
+  sidSel = 0;
+  for (int i = 0; i < sidCount; i++)
+    if (sidItems[i] == select) sidSel = i;
+  sidTop = sidSel < kSidRows ? 0 : sidSel - kSidRows / 2;
+}
+
+static void sidOpenNow() {
+  if (!musicTried) {
+    musicTried = true;
+    musicLoaded = music.load((musicFolder() + "music.txt").c_str(), ps5BigAlloc, ps5BigFree);
+  }
+  if (sidCount == 0) sidList("", -1);
+  P4SidEngine::get().enter();
+  sidOpen = true;
+  menuOpen = false;
+  downKey = -1;
+  fullCopies = 2;
+}
+
+static void sidClose() {
+  P4SidEngine::get().stop();
+  P4SidEngine::get().leave();
+  sidOpen = false;
+  sidPlaying = -1;
+  drawSides();
+}
+
+static void sidPlay(int index, int song) {
+  const MusicEntry &e = music[index];
+  FILE *f = fopen((musicFolder() + e.path).c_str(), "rb");
+  if (!f) {
+    snprintf(sidMsg, sizeof(sidMsg), "CANNOT OPEN %.40s", e.name);
+    return;
+  }
+  size_t len = fread(sidFile, 1, sizeof(sidFile), f);
+  fclose(f);
+  const char *err = P4SidEngine::get().load(sidFile, len, song);
+  if (err) {
+    snprintf(sidMsg, sizeof(sidMsg), "%s", err);
+    return;
+  }
+  sidMsg[0] = 0;
+  sidPlaying = index;
+}
+
+// The next (or previous) tune in the playing tune's folder; -1 = none
+static int sidNeighbour(int index, int dir) {
+  const MusicEntry &e = music[index];
+  static int around[65536];
+  std::string folder(e.parent, (size_t)e.parentLen);
+  int n = music.children(folder.c_str(), around, 65536);
+  for (int i = 0; i < n; i++) {
+    if (around[i] != index) continue;
+    for (int j = i + dir; j >= 0 && j < n; j += dir)
+      if (music[around[j]].kind == 'S') return around[j];
+  }
+  return -1;
+}
+
+static void sidNextTune(int dir) {
+  if (sidPlaying < 0) return;
+  int n = sidNeighbour(sidPlaying, dir);
+  if (n >= 0) sidPlay(n, music[n].start);
+  else P4SidEngine::get().stop(), sidPlaying = -1;
+}
+
+static void sidInput() {
+  P4SidEngine &eng = P4SidEngine::get();
+  const uint32_t up = RAW_UP | STICK_UP, down = RAW_DOWN | STICK_DOWN, left = RAW_LEFT | STICK_LEFT,
+                 right = RAW_RIGHT | STICK_RIGHT;
+  if (pressed & RAW_OPTIONS) {
+    sidClose();
+    return;
+  }
+  if (sidCount > 0) {
+    if (repeating(up)) sidSel = (sidSel - 1 + sidCount) % sidCount;
+    if (repeating(down)) sidSel = (sidSel + 1) % sidCount;
+    if (repeating(left)) sidSel = sidSel - kSidRows < 0 ? 0 : sidSel - kSidRows;
+    if (repeating(right)) sidSel = sidSel + kSidRows >= sidCount ? sidCount - 1 : sidSel + kSidRows;
+    if (sidSel < sidTop) sidTop = sidSel;
+    if (sidSel >= sidTop + kSidRows) sidTop = sidSel - kSidRows + 1;
+  }
+  if (pressed & RAW_CROSS) {
+    if (sidCount > 0) {
+      int i = sidItems[sidSel];
+      if (music[i].kind == 'D') sidList(music[i].path, -1);
+      else if (music[i].kind == 'S' && eng.ready()) sidPlay(i, music[i].start);
+    }
+  }
+  if (pressed & RAW_CIRCLE) {
+    if (sidFolder.empty()) {
+      sidClose();
+      return;
+    }
+    // up a folder, on the one just left
+    size_t slash = sidFolder.rfind('/');
+    std::string up = slash == std::string::npos ? "" : sidFolder.substr(0, slash);
+    int was = -1;
+    for (int i = 0; i < music.size(); i++)
+      if (music[i].kind == 'D' && sidFolder == music[i].path) was = i;
+    sidList(up, was);
+  }
+  if (sidPlaying >= 0) {
+    if (pressed & RAW_SQUARE) eng.setPaused(!eng.isPaused());
+    if (pressed & RAW_TRIANGLE) {
+      eng.stop();
+      sidPlaying = -1;
+    }
+    if (pressed & RAW_R1) eng.selectSong(eng.currentSong() + 1);
+    if (pressed & RAW_L1) eng.selectSong(eng.currentSong() - 1);
+    if (pressed & RAW_R2) sidNextTune(1);
+    if (pressed & RAW_L2) sidNextTune(-1);
+  }
+  // the end of a song: the next song of the tune, then the next tune
+  if (sidPlaying >= 0 && eng.isPlaying() && !eng.isPaused()) {
+    const MusicEntry &e = music[sidPlaying];
+    uint32_t ms = eng.framesPlayed() * 20, len = MusicList::songLength(e, eng.currentSong());
+    bool over = len ? ms >= len : (eng.silentFrames() >= 250 && ms > 3000); // (unknown: 5 s of silence)
+    if (over) {
+      if (eng.currentSong() < e.songs) eng.selectSong(eng.currentSong() + 1);
+      else sidNextTune(1);
+    }
+  }
+}
+
+static void sidNoteName(uint16_t freq, char out[5]) {
+  if (freq < 100) {
+    strcpy(out, "---");
+    return;
+  }
+  static const char *names[12] = {"C-", "C#", "D-", "D#", "E-", "F-", "F#", "G-", "G#", "A-", "A#", "B-"};
+  double hz = freq * (985248.0 / 16777216.0);
+  int midi = (int)lround(69 + 12 * log2(hz / 440.0));
+  if (midi < 0) midi = 0;
+  if (midi > 127) midi = 127;
+  snprintf(out, 5, "%s%d", names[midi % 12], midi / 12 - 1);
+}
+
+static void timeText(uint32_t ms, char *out, size_t n) {
+  snprintf(out, n, "%u:%02u", (unsigned)(ms / 60000), (unsigned)(ms / 1000 % 60));
+}
+
+static void drawSidPlayer() {
+  P4SidEngine &eng = P4SidEngine::get();
+  const uint32_t blue = kC64Pal[6], light = kC64Pal[14], white = kC64Pal[1], yellow = kC64Pal[7];
+  fillRect(0, 0, kW, kH, light);
+  fillRect(48, 48, kW - 96, kH - 96, blue);
+  text(96, 80, "**** SID MUSIC PLAYER ****", 4, light);
+
+  // ---- left: the folder and what is in it
+  char line[80];
+  snprintf(line, sizeof(line), "/%.40s", sidFolder.c_str());
+  text(96, 150, line, 2, white);
+  int lx = 96, ly = 190, rowH = 38;
+  if (!musicLoaded) {
+    text(lx, ly, "NO MUSIC IN THE APP.", 3, light);
+    text(lx, ly + 50, "PUT .SID FILES IN", 2, light);
+    text(lx, ly + 80, "C64/ASSETS/C64/MUSIC", 2, light);
+    text(lx, ly + 110, "AND BUILD AGAIN", 2, light);
+  } else if (sidCount == 0) {
+    text(lx, ly, "(EMPTY)", 3, light);
+  }
+  for (int r = 0; r < kSidRows && sidTop + r < sidCount; r++) {
+    int i = sidItems[sidTop + r];
+    const MusicEntry &e = music[i];
+    if (e.kind == 'D') snprintf(line, sizeof(line), "%.30s/", e.name);
+    else snprintf(line, sizeof(line), "%.31s", e.title[0] ? e.title : e.name);
+    bool sel = sidTop + r == sidSel;
+    uint32_t col = i == sidPlaying ? yellow : light;
+    if (sel) {
+      char pad[40];
+      snprintf(pad, sizeof(pad), "%-32s", line);
+      text(lx, ly + r * rowH, pad, 3, col, true, blue);
+    } else {
+      text(lx, ly + r * rowH, line, 3, e.kind == 'D' ? white : col);
+    }
+  }
+  if (sidCount > kSidRows) {
+    snprintf(line, sizeof(line), "%d-%d OF %d", sidTop + 1, sidTop + kSidRows < sidCount ? sidTop + kSidRows : sidCount,
+             sidCount);
+    text(lx, ly + kSidRows * rowH + 6, line, 2, light);
+  }
+
+  // ---- right: what is playing
+  int rx = 1000, ry = 150;
+  fillRect(rx - 30, 140, 4, 820, light);
+  if (!eng.ready()) {
+    text(rx, ry, "STARTING THE C64...", 3, light);
+  } else if (sidPlaying < 0 || !eng.isPlaying()) {
+    text(rx, ry, "NOTHING PLAYING", 3, light);
+    text(rx, ry + 50, "CHOOSE A TUNE ON THE LEFT", 2, light);
+  } else {
+    const MusicEntry &e = music[sidPlaying];
+    const SidTuneInfo &t = eng.tuneInfo();
+    text(rx, ry, t.name[0] ? t.name : e.name, 3, white);
+    text(rx, ry + 44, t.author, 2, light);
+    text(rx, ry + 74, t.released, 2, light);
+    snprintf(line, sizeof(line), "SONG %d OF %d", eng.currentSong(), t.songs);
+    text(rx, ry + 130, line, 3, white);
+    uint32_t ms = eng.framesPlayed() * 20, len = MusicList::songLength(e, eng.currentSong());
+    char a[16], b[16];
+    timeText(ms, a, sizeof(a));
+    if (len) {
+      timeText(len, b, sizeof(b));
+      snprintf(line, sizeof(line), "%s / %s", a, b);
+    } else {
+      snprintf(line, sizeof(line), "%s", a);
+    }
+    text(rx, ry + 180, line, 3, white);
+    // the progress bar
+    int bw = 780;
+    frameRect(rx, ry + 222, bw, 20, 3, light);
+    if (len) fillRect(rx + 4, ry + 226, (int)((uint64_t)(bw - 8) * (ms < len ? ms : len) / len), 12, white);
+    snprintf(line, sizeof(line), "SID %d%s%s", eng.modelInUse(), t.rsid ? "  RSID" : "",
+             eng.isPaused() ? "   PAUSED" : "");
+    text(rx, ry + 262, line, 2, eng.isPaused() ? yellow : light);
+
+    // the three voices: envelope level, waveform, note
+    const SID &sid = cpu->sid;
+    for (int v = 0; v < 3; v++) {
+      int vx = rx + v * 260, vy = ry + 330, bh = 300;
+      snprintf(line, sizeof(line), "VOICE %d", v + 1);
+      text(vx, vy, line, 2, white);
+      uint8_t ctrl = sid.sidVoice[v].control;
+      const char *wave = (ctrl & 0x80) ? "NOISE" : (ctrl & 0x40) ? "PULSE" : (ctrl & 0x20) ? "SAW" : (ctrl & 0x10) ? "TRI" : "-";
+      text(vx, vy + 30, wave, 2, light);
+      char note[5];
+      sidNoteName((uint16_t)(sid.sidreg[v * 7] | sid.sidreg[v * 7 + 1] << 8), note);
+      if (sid.sidVoice[v].env == 0) strcpy(note, "---");
+      text(vx + 120, vy + 30, note, 2, light);
+      frameRect(vx, vy + 64, 200, bh, 3, light);
+      int h = sid.sidVoice[v].env * (bh - 8) / 255;
+      if (h > 0) fillRect(vx + 4, vy + 64 + bh - 4 - h, 192, h, v == 0 ? kC64Pal[13] : v == 1 ? kC64Pal[7] : kC64Pal[10]);
+    }
+  }
+  if (sidMsg[0]) text(rx, 900, sidMsg, 2, yellow);
+
+  // ---- the controls, along the bottom
+  int by = 990, x = 96;
+  auto ctl = [&](Icon ic, const char *btn, const char *what) {
+    if (btn) buttonLabel(btn, x + 24, by + 8, 2);
+    else icon(ic, x + 16, by + 8, 26);
+    int bw = btn ? textWidth(btn, 2) + 24 : 32;
+    text(x + bw + 10, by, what, 2, white);
+    x += bw + 10 + textWidth(what, 2) + 40;
+  };
+  ctl(ICON_CROSS, nullptr, "PLAY/OPEN");
+  ctl(ICON_CIRCLE, nullptr, "BACK");
+  ctl(ICON_SQUARE, nullptr, "PAUSE");
+  ctl(ICON_TRIANGLE, nullptr, "STOP");
+  ctl(ICON_CROSS, "L1 R1", "SONG");
+  ctl(ICON_CROSS, "L2 R2", "TUNE");
+  ctl(ICON_CROSS, "OPT", "C64");
+}
+
 // ============================================================ once a frame
 static void frameInput() {
   padRead();
@@ -827,12 +1115,24 @@ static void frameInput() {
   pressed = held & ~prevHeld;
   prevHeld = held;
 
+  if (sidOpen) {
+    g_c64Joy[0].store(0xff);
+    g_c64Joy[1].store(0xff);
+    sidInput();
+    sendKey(held);
+    return;
+  }
   if (menuOpen) {
     g_c64Joy[0].store(0xff);
     g_c64Joy[1].store(0xff);
     menuInput();
     sendKey(held);
-    if (!menuOpen) drawSides(); // (the port may have changed)
+    if (sidOpenRequested) {
+      sidOpenRequested = false;
+      sidOpenNow();
+    } else if (!menuOpen) {
+      drawSides(); // (the port may have changed)
+    }
     return;
   }
   if (pressed & RAW_OPTIONS) {
@@ -918,10 +1218,15 @@ int main() {
     frameInput();
     if (mode != drawnMode) drawnMode = mode;
     cpu->vic.refresh(); // the newest finished C64 picture into g_c64Pixels
-    composeC64();
-    if (mode == MODE_KEYS) drawKeyboard();
-    if (menuOpen) drawMenu();
-    drawToast();
+    if (sidOpen) {
+      drawSidPlayer();
+      fullCopies = 1; // (the player has the whole TV)
+    } else {
+      composeC64();
+      if (mode == MODE_KEYS) drawKeyboard();
+      if (menuOpen) drawMenu();
+      drawToast();
+    }
     int back = shown ^ 1;
     if (fullCopies > 0) {
       fullCopies--;

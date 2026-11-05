@@ -12,7 +12,7 @@ here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 src=$here/../src
 out=$here/out
 mkdir -p "$out/obj"
-flags=(-std=c++20 -O2 -Wall -Wextra -fno-exceptions -fno-rtti -DPS5_SIM -pthread)
+flags=(-std=c++20 -O2 -Wall -Wextra -fno-exceptions -fno-rtti -DPS5_SIM -pthread -I"$here/../../common")
 objs=()
 while IFS= read -r -d '' f; do
     o=$out/obj/$(echo "${f#$src/}" | tr '/' '_').o

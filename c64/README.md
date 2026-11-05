@@ -60,6 +60,36 @@ and starts it:
 The C64 keeps running behind the menu. D-pad up / down, Cross chooses, left / right change the
 port and the volume, Circle or Options go back.
 
+## SID music player
+
+**SID MUSIC PLAYER** in the menu (Options) opens the board's SID player as a screen of its own. It
+saves the C64 as it is (a game carries on afterwards) and plays the tunes on the same emulated SID
+chip as games do.
+
+Put `.sid` files in `c64/assets/c64/music` before building (folders inside are fine: HVSC's
+`C64Music` folder works as it is). With HVSC's `Songlengths.md5` there too, each song's length is
+shown and the player moves on when it ends (the next song, then the next tune); without it, after
+5 seconds of silence.
+
+| DualSense | |
+| --- | --- |
+| D-pad up / down (left / right a page) | choose a folder or tune |
+| Cross | open the folder / play the tune |
+| Circle | up a folder (at the top: back to the C64) |
+| Square | pause |
+| Triangle | stop |
+| L1 / R1 | the tune's previous / next song |
+| L2 / R2 | the previous / next tune in the folder |
+| Options | back to the C64 |
+
+The screen shows the tune's title, author and release, the song and its time, the SID model, and
+for each voice its waveform, note and envelope level.
+
+**Music added later over FTP:** the PS5 won't let the app list a folder, so the player reads
+`music.txt`, the list the build makes with `tools/make_music_list.py`. Copy the tunes into
+`/data/homebrew/PPSA99904/assets/c64/music`, run the tool on a copy of that folder on your PC
+(`python3 tools/make_music_list.py path/to/music`), and copy the new `music.txt` there too.
+
 ## Drive 8
 
 - `LOAD"NAME",8` loads `NAME.prg` from the app (any case; `NA*` and `*` work).
@@ -82,9 +112,11 @@ Files copied into `/data/homebrew/PPSA99904/assets/c64` over FTP later need a li
 | `src/ps5/PS5File.cpp` | drive 8: the app's `assets/c64` folder |
 | `src/ps5/PlatformPS5.cpp` | threads, timers, the clock |
 | `src/ps5/P4KeyboardData.h` | the Waveshare port's keyboard picture (scaled 1.5x on the TV) |
+| `src/ps5/P4SidEngine.*` | the board's SID player engine (a spin lock for `std::mutex`, fixed buffers) |
+| `../common/MusicList.h` | the music players' list (`music.txt`), shared with the Amiga; `build.sh` copies it in |
 | `src/ps5/cxx_runtime.cpp` | the bit of the C++ library a PS5 app doesn't link (std::string) |
 | `sce_sys/` | `param.json` and the home-screen icon |
-| `assets/c64/` | your programs and disks (kept out of git, apart from the demo and the test disk) |
+| `assets/c64/` | your programs and disks (kept out of git, apart from the demo and the test disk); `music/`: SID tunes |
 | `sim/` | the PC simulator (below) |
 | `tools/make_d64.py` | makes a test disk from a program |
 
@@ -121,7 +153,7 @@ R1 `800`) for frames from-to. `SIM_TOUCH="200-260:0.5,0.4"` puts a finger on the
 
 ## Not yet
 
-- The SID music player and cartridges (`.crt`) from the board's menu.
+- Cartridges (`.crt`) from the board's menu.
 - The C64 runs at 50 frames a second (PAL) and the TV at 60, so one picture in five is shown
   twice: smooth scrolling can look slightly uneven.
 - Nothing is kept when the app closes (the C64's memory; the volume and port go back to 80% and 2).

@@ -48,6 +48,10 @@ void ps5SoundSetVolume(int percent); // 0-100
 // sorted by name
 std::vector<std::string> ps5ListC64Files();
 
+// ---- big blocks (from the system with mmap: a PS5 app's malloc heap is small)
+void *ps5BigAlloc(size_t n);
+void ps5BigFree(void *p);
+
 // ---- small helpers
 void ps5Notify(const char *msg); // a system notification (the pop-up)
 uint64_t ps5NowUs();             // microseconds since the app started

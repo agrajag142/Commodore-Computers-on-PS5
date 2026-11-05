@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <time.h>
 
 // ============================================================ folders
@@ -30,6 +31,21 @@ const char *ps5DataDir() {
 const char *ps5AppDir() { return "/app0"; }
 const char *ps5DataDir() { return "/download0"; }
 #endif
+
+// ============================================================ big blocks
+// Each block starts with a 64-byte header saying how big it is, for ps5BigFree
+void *ps5BigAlloc(size_t n) {
+  size_t total = (n + 64 + 0xfff) & ~(size_t)0xfff;
+  void *p = mmap(nullptr, total, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+  if (p == MAP_FAILED) return nullptr;
+  ((size_t *)p)[0] = total;
+  return (uint8_t *)p + 64;
+}
+void ps5BigFree(void *q) {
+  if (!q) return;
+  uint8_t *p = (uint8_t *)q - 64;
+  munmap(p, ((size_t *)p)[0]);
+}
 
 // ============================================================ helpers
 uint64_t ps5NowUs() {
