@@ -899,7 +899,14 @@ void C64Sys::run() {
 
     // get start time of frame, play audio
     if (vic.rasterline == 311) {
-      lastMeasuredTime = PlatformManager::getInstance().getTimeUS();
+      // PS5 port: the next frame starts when this one should have ended
+      // (20 ms after it started), not when it did. The PS5's platform skips
+      // waits under 1.5 ms, so a frame can end a little early; counting from
+      // then made the C64 (and its music) run about 1-4% fast. Only after a
+      // long hold-up (the machine was busy) does it start again from now.
+      int64_t frameEnd = lastMeasuredTime + 20000;
+      int64_t nowUs = PlatformManager::getInstance().getTimeUS();
+      lastMeasuredTime = (nowUs - frameEnd > 100000 || frameEnd - nowUs > 20000) ? nowUs : frameEnd;
       // the picture is complete: hand it to the display
       vic.frameDone();
       sid.playAudio();

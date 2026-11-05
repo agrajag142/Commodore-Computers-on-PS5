@@ -1217,6 +1217,19 @@ int main() {
     sceVideoOutWaitVblank(video);
     frameInput();
     if (mode != drawnMode) drawnMode = mode;
+#ifdef PS5_SIM
+    if (getenv("SIM_SPEED")) { // while a SID tune plays: the C64's frames per real second (50 = right)
+      static uint64_t t0 = 0;
+      static uint32_t f0 = 0;
+      uint32_t f = P4SidEngine::get().framesPlayed();
+      if (flip % 600 == 0) {
+        uint64_t t = ps5NowUs();
+        if (t0) fprintf(stderr, "SPEED: %.3f frames/s\n", (f - f0) * 1e6 / (double)(t - t0));
+        t0 = t;
+        f0 = f;
+      }
+    }
+#endif
     cpu->vic.refresh(); // the newest finished C64 picture into g_c64Pixels
     if (sidOpen) {
       drawSidPlayer();

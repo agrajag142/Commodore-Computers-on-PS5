@@ -149,7 +149,8 @@ SIM_APP0=../.. SIM_FRAMES=740 SIM_SHOTS=210,720 SIM_PAD="180-183:8;200-203:4000"
 `SIM_PAD` holds buttons (the PS5's bits, in hex: Cross `4000`, Square `8000`, Circle `2000`,
 Triangle `1000`, Options `8`, D-pad up `10` / right `20` / down `40` / left `80`, L1 `400`,
 R1 `800`) for frames from-to. `SIM_TOUCH="200-260:0.5,0.4"` puts a finger on the touchpad,
-`SIM_WAV=out.wav` keeps the sound.
+`SIM_WAV=out.wav` keeps the sound. `SIM_SPEED=1` prints the C64's speed every 10 seconds while a SID
+tune plays (50.0 frames a second is a real PAL C64).
 
 ## Not yet
 
