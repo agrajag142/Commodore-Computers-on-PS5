@@ -4,6 +4,14 @@
 #include "ps5_sce.h"
 
 #include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
+#ifndef PS5_SIM
+#include <sys/ioctl.h>
+#include <sys/types.h>
+#include <dev/usb/usb.h>
+#include <dev/usb/usb_ioctl.h>
+#endif
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -86,6 +94,45 @@ void start(int32_t initialUser) {
     }
   logLine("USB KEYBOARD TEST 2 (C64 for PS5, " KBD_TITLE "). Initial user %d (0x%x)", (int)initialUser,
           (unsigned)initialUser);
+
+  // 0. Can the app see the USB devices themselves (/dev/ugenB.D, FreeBSD's
+  // generic USB driver - how PS5-KBM-Bridge reads a keyboard)? Only looked at:
+  // opened read-only, the device's IDs read, closed again.
+  {
+    int fd = open("/dev/null", O_RDONLY);
+    step("/DEV/NULL: %s (%d)", fd >= 0 ? "OPENS" : "NOT VISIBLE", fd >= 0 ? 0 : errno);
+    if (fd >= 0) close(fd);
+    int opened = 0, tried = 0, shown = 0;
+    int errs[8] = {}, errCount[8] = {}, kinds = 0;
+    for (int bus = 0; bus <= 2; bus++)
+      for (int dev = 1; dev <= 31; dev++) {
+        char path[32];
+        snprintf(path, sizeof(path), "/dev/ugen%d.%d", bus, dev);
+        tried++;
+        int f = open(path, O_RDONLY | O_NONBLOCK);
+        if (f < 0) {
+          int e = errno, k = 0;
+          while (k < kinds && errs[k] != e) k++;
+          if (k == kinds && kinds < 8) errs[kinds++] = e;
+          if (k < 8) errCount[k]++;
+          continue;
+        }
+        opened++;
+        unsigned vid = 0, pid = 0;
+#ifndef PS5_SIM
+        struct usb_device_descriptor d;
+        memset(&d, 0, sizeof(d));
+        if (ioctl(f, USB_GET_DEVICE_DESC, &d) == 0) vid = UGETW(d.idVendor), pid = UGETW(d.idProduct);
+#endif
+        close(f);
+        logLine("%s opened: %04x:%04x", path, vid, pid);
+        if (shown++ < 4) step("%s: OPENS, DEVICE %04X:%04X", path, vid, pid);
+      }
+    char line[80];
+    int n = snprintf(line, sizeof(line), "UGEN: %d OF %d OPEN.", opened, tried);
+    for (int k = 0; k < kinds && n < 70; k++) n += snprintf(line + n, sizeof(line) - n, " ERR %d X%d", errs[k], errCount[k]);
+    step("%s", line);
+  }
 
   // 1. Can this app load a system library this way at all? Ones it already
   // uses (the controller, the sound) should load (or give their handle back).

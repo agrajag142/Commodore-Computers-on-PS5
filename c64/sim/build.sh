@@ -14,9 +14,11 @@ out=$here/out
 mkdir -p "$out/obj"
 flags=(-std=c++20 -O2 -Wall -Wextra -fno-exceptions -fno-rtti -DPS5_SIM -pthread -I"$here/../../common")
 objs=()
+# (a changed header rebuilds everything: simple, and the build is quick)
+newest_h=$(find "$src" "$here/../../common" -name '*.h' -printf '%T@ %p\n' | sort -n | tail -1 | cut -d' ' -f2-)
 while IFS= read -r -d '' f; do
     o=$out/obj/$(echo "${f#$src/}" | tr '/' '_').o
-    if [[ ! -f $o || $f -nt $o ]]; then
+    if [[ ! -f $o || $f -nt $o || $newest_h -nt $o ]]; then
         echo "  CC ${f#$src/}"
         g++ "${flags[@]}" -c "$f" -o "$o"
     fi

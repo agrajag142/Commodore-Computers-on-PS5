@@ -1236,8 +1236,8 @@ static void drawKbdTest() {
   snprintf(line, sizeof(line), "LOG FILE: %s", S.logPath[0] ? S.logPath : "(NONE COULD BE WRITTEN)");
   text(64, 116, line, 2, S.logPath[0] ? yellow : grey);
   int y = 160;
-  for (int i = 0; i < S.stepCount; i++, y += 20) text(64, y, S.steps[i], 2, light);
-  y = 160 + KeyboardProbe::kLines * 20 + 10;
+  for (int i = 0; i < S.stepCount; i++, y += 18) text(64, y, S.steps[i], 2, light);
+  y = 160 + KeyboardProbe::kLines * 18 + 10;
   if (S.opened) {
     snprintf(line, sizeof(line), "READ %ld   READSTATE: %08X (%d BYTES)   READ: %08X (%d BYTES)", S.reads, (unsigned)S.readStateRet,
              S.writtenState, (unsigned)S.readRet, S.writtenRead);
