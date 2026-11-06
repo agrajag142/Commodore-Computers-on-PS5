@@ -3,9 +3,20 @@
 #include "KeyboardProbe.h"
 #include "ps5_sce.h"
 
+#include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+
+#ifdef KBD_DIRECT
+// (the keyboard test build: imported from libSceKeyboard when the app starts)
+extern "C" {
+int sceKeyboardInit();
+int sceKeyboardOpen(int32_t user, int32_t type, int32_t index, const void *param);
+int sceKeyboardReadState(int32_t handle, void *data);
+int sceKeyboardRead(int32_t handle, void *data, int32_t count);
+}
+#endif
 
 namespace KeyboardProbe {
 
@@ -62,41 +73,80 @@ void start(int32_t initialUser) {
   memset(S.changedAt, 255, sizeof(S.changedAt));
   S.readStateRet = S.readRet = 0x7fffffff;
 
-  static const char *logs[] = {"/data/homebrew/PPSA99904/kbdtest.txt", "/download0/kbdtest.txt"};
+#ifdef KBD_DIRECT
+#define KBD_TITLE "PPSA99906"
+#else
+#define KBD_TITLE "PPSA99904"
+#endif
+  static const char *logs[] = {"/data/homebrew/" KBD_TITLE "/kbdtest.txt", "/download0/kbdtest.txt"};
   for (const char *p : logs)
     if ((logFile = fopen(p, "w")) != nullptr) {
       snprintf(S.logPath, sizeof(S.logPath), "%s", p);
       break;
     }
-  logLine("USB KEYBOARD TEST (C64 for PS5). Initial user %d (0x%x)", (int)initialUser, (unsigned)initialUser);
+  logLine("USB KEYBOARD TEST 2 (C64 for PS5, " KBD_TITLE "). Initial user %d (0x%x)", (int)initialUser,
+          (unsigned)initialUser);
 
-  // 1. the library
+  // 1. Can this app load a system library this way at all? Ones it already
+  // uses (the controller, the sound) should load (or give their handle back).
+  static const char *known[] = {"libScePad.sprx", "/system/common/lib/libScePad.sprx",
+                                "/system/common/lib/libSceAudioOut.sprx"};
+  for (const char *p : known) {
+    logLine("about to load %s", p);
+    int m = sceKernelLoadStartModule(p, 0, nullptr, 0, nullptr, nullptr);
+    step("CHECK %s: %08X", p, (unsigned)m);
+  }
+
+  // 2. Is the keyboard library there (visible to the app), and does it load?
   static const char *paths[] = {"libSceKeyboard.sprx", "/system/common/lib/libSceKeyboard.sprx",
-                                "/system/priv/lib/libSceKeyboard.sprx"};
+                                "/system/priv/lib/libSceKeyboard.sprx", "/system_ex/common_ex/lib/libSceKeyboard.sprx",
+                                "/system/common/lib/libSceMouse.sprx"};
   int mod = -1;
   for (const char *p : paths) {
+    if (p[0] == '/') {
+      FILE *f = fopen(p, "rb");
+      int e = errno;
+      if (f) fclose(f);
+      logLine("%s: %s (errno %d)", p, f ? "the file is there" : "cannot open the file", f ? 0 : e);
+      if (!f) {
+        step("%s: NO FILE (%d)", p, e);
+        continue;
+      }
+    }
     logLine("about to load %s", p);
-    mod = sceKernelLoadStartModule(p, 0, nullptr, 0, nullptr, nullptr);
-    step("LOAD %s: %08X", p, (unsigned)mod);
-    if (mod >= 0) break;
-  }
-  if (mod < 0) {
-    step("THE KEYBOARD LIBRARY COULD NOT BE LOADED");
-    return;
+    int m = sceKernelLoadStartModule(p, 0, nullptr, 0, nullptr, nullptr);
+    step("LOAD %s: %08X", p, (unsigned)m);
+    if (m >= 0 && strstr(p, "Keyboard") && mod < 0) mod = m;
   }
 
-  // 2. its functions
   void *fInit = nullptr, *fOpen = nullptr, *fState = nullptr, *fRead = nullptr;
-  sceKernelDlsym(mod, "sceKeyboardInit", &fInit);
-  sceKernelDlsym(mod, "sceKeyboardOpen", &fOpen);
-  sceKernelDlsym(mod, "sceKeyboardReadState", &fState);
-  sceKernelDlsym(mod, "sceKeyboardRead", &fRead);
+  if (mod < 0) {
+#ifdef KBD_DIRECT
+    // 3. This build also imports the keyboard functions the usual way: the PS5
+    // found the library when it started the app, if this line shows at all.
+    step("NOT LOADED, BUT THIS BUILD IMPORTS IT: USING THOSE");
+    fInit = (void *)sceKeyboardInit;
+    fOpen = (void *)sceKeyboardOpen;
+    fState = (void *)sceKeyboardReadState;
+    fRead = (void *)sceKeyboardRead;
+#else
+    step("THE KEYBOARD LIBRARY COULD NOT BE LOADED");
+    return;
+#endif
+  } else {
+    sceKernelDlsym(mod, "sceKeyboardInit", &fInit);
+    sceKernelDlsym(mod, "sceKeyboardOpen", &fOpen);
+    sceKernelDlsym(mod, "sceKeyboardReadState", &fState);
+    sceKernelDlsym(mod, "sceKeyboardRead", &fRead);
+  }
+
+  // 4. its functions
   step("FOUND: INIT %s OPEN %s READSTATE %s READ %s", fInit ? "Y" : "N", fOpen ? "Y" : "N", fState ? "Y" : "N",
        fRead ? "Y" : "N");
   readState = (FnReadState)fState;
   readData = (FnRead)fRead;
 
-  // 3. init and open
+  // 5. init and open
   if (fInit) {
     logLine("about to call sceKeyboardInit()");
     step("INIT: %08X", (unsigned)((FnInit)fInit)());

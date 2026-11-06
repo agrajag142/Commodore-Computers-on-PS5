@@ -76,6 +76,12 @@ the app, the file's last line says which call did it. The code is `src/ps5/Keybo
 simulator has a made-up keyboard (`SIM_KEY="300-320:04"` holds key code 04 in byte 8 for those
 frames, `SIM_NOKBD=1` makes the library fail to load).
 
+The test first checks that the app can load libraries this way at all (the controller's and the
+sound's, which it already uses), then whether the keyboard library's file can be seen. A second
+build, `KBD_DIRECT=1 c64/build.sh` (`build/c64kbd/PPSA99906`, "C64 Keyboard Test", beside the C64),
+also imports the keyboard library the usual way, as the app does the controller's: if the PS5
+can't give the library to a homebrew app, that build doesn't start at all.
+
 ## SID music player
 
 **SID MUSIC PLAYER** in the menu (Options) opens the board's SID player as a screen of its own. It

@@ -16,8 +16,8 @@
 
 namespace KeyboardProbe {
 
-static const int kLines = 14;      // the set-up steps shown
-static const int kChanges = 12;    // the latest changes shown
+static const int kLines = 22;      // the set-up steps shown
+static const int kChanges = 8;     // the latest changes shown
 static const int kStateBytes = 96; // the bytes shown of what a read returns
 
 struct State {
