@@ -36,6 +36,27 @@ repository. Then put it on the home screen with ShadowMountPlus, as with Hello P
 | Options | the menu |
 | Touchpad click | the SID music player, straight away |
 
+**A USB keyboard** plugged into the PS5 types on the C64. The app takes it from the PS5 while it runs
+(and gives it back when it quits, or with USB KEYBOARD in the menu set to off), and looks for one
+every 2 seconds, so it can be plugged in any time. The keys type what they say on a PC keyboard
+(Shift+2 is @, Shift+' is "), as far as the C64 has the character, and:
+
+| PC key | C64 |
+| --- | --- |
+| Esc | RUN/STOP |
+| Page Up | RESTORE |
+| Home / End | CLR/HOME / CLR |
+| Backspace, Delete / Insert | INST/DEL / INST |
+| the arrows | the cursor keys |
+| F1-F8 | F1-F8 (F2 is SHIFT F1) |
+| Ctrl / Alt or Windows | CTRL / C= |
+| \` / \\ | LEFTARROW / POUND |
+| F12 | the menu |
+
+In the menu and the SID player: the arrows, Return (Cross), Esc (Circle), Space (Square), Tab
+(Triangle), F12 (Options). The C64 sees one key at a time (with SHIFT, CTRL and C=), as on the
+board.
+
 **On-screen keyboard** (Triangle; the C64 picture 3x above it):
 
 | DualSense | |
@@ -52,7 +73,7 @@ C= then SHIFT switches upper / lower case. SHIFT LOCK stays on until pressed aga
 RESTORE works too.
 
 **Menu** (Options): BACK TO THE C64, SID MUSIC PLAYER, RESET C64, the joystick port, the volume,
-USB KEYBOARD TEST (below), QUIT TO THE PS5 HOME SCREEN (Cross twice), then the programs and disks. It opens on the program chosen last (or the first one). Choosing one restarts the C64
+USB KEYBOARD (on / off), USB KEYBOARD TEST (below), QUIT TO THE PS5 HOME SCREEN (Cross twice), then the programs and disks. It opens on the program chosen last (or the first one). Choosing one restarts the C64
 and starts it:
 
 - a `.prg`: loaded straight into memory and RUN (as the board's AUTOSTART does)

@@ -110,6 +110,37 @@ extern "C" int sceKernelDlsym(int, const char *symbol, void **address) {
   return *address ? 0 : -1;
 }
 
+// ---------------------------------------------------------------- a USB keyboard, straight from USB
+// SIM_USBKEYS="300-305:0200040000000000;320-322:0000280000000000": the keyboard's
+// 8-byte boot reports (hex) for those frames; all keys up between them.
+extern "C" int simUsbKeyboard(uint8_t report[8]) {
+  static uint8_t last[8];
+  uint8_t now[8] = {};
+  long f = frameNo.load();
+  if (const char *s = getenv("SIM_USBKEYS")) {
+    std::string all = s;
+    size_t at = 0;
+    while (at < all.size()) {
+      long a = 0, b = 0;
+      char hex[17] = {};
+      sscanf(all.c_str() + at, "%ld-%ld:%16s", &a, &b, hex);
+      if (f >= a && f <= b)
+        for (int i = 0; i < 8; i++) {
+          unsigned v = 0;
+          sscanf(hex + i * 2, "%2x", &v);
+          now[i] = (uint8_t)v;
+        }
+      at = all.find(';', at);
+      if (at == std::string::npos) break;
+      at++;
+    }
+  }
+  if (!memcmp(now, last, 8)) return 0;
+  memcpy(last, now, 8);
+  memcpy(report, now, 8);
+  return 1;
+}
+
 // ---------------------------------------------------------------- video
 static void *buffers[2];
 static std::vector<long> shots;

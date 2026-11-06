@@ -17,6 +17,7 @@
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #ifndef PS5_SIM
@@ -24,6 +25,11 @@
 #include <sys/types.h>
 #include <dev/usb/usb.h>
 #include <dev/usb/usb_ioctl.h>
+#endif
+
+#ifdef PS5_SIM
+// the PC simulator's made-up keyboard (sim_sce.cpp, SIM_USBKEYS): 1 and a report when one comes
+extern "C" int simUsbKeyboard(uint8_t report[8]);
 #endif
 
 class UsbKeyboard {
@@ -41,7 +47,13 @@ public:
     memset(&out, 0, sizeof(out));
     out.iface = out.ep = out.mouseIface = out.mouseEp = -1;
     int opened = 0, found = 0;
-#ifndef PS5_SIM
+#ifdef PS5_SIM
+    if (getenv("SIM_USBKEYS")) {
+      snprintf(out.path, sizeof(out.path), "/dev/ugen1.3");
+      out.vid = 0x062a, out.pid = 0x4101, out.iface = 0, out.ep = 0x81;
+      opened = found = 1;
+    }
+#else
     for (int bus = 0; bus <= 2 && !found; bus++)
       for (int dev = 1; dev <= 31 && !found; dev++) {
         char path[32];
@@ -82,8 +94,13 @@ public:
     close(false);
     info = i;
 #ifdef PS5_SIM
-    errno = ENODEV;
-    return 1;
+    if (!getenv("SIM_USBKEYS")) {
+      errno = ENODEV;
+      return 1;
+    }
+    fd = 1;
+    epOpen = true;
+    return 0;
 #else
     fd = ::open(i.path, O_RDWR);
     if (fd < 0) return 1;
@@ -151,8 +168,10 @@ public:
     if (!inFlight && !lost) arm();
     return got;
 #else
-    (void)report;
-    return 0;
+    if (fd < 0) return 0;
+    int got = simUsbKeyboard(report);
+    if (got) reports++, completions++, lastLen = 8;
+    return got;
 #endif
   }
 

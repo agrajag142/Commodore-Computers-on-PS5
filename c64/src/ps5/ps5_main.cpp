@@ -30,6 +30,7 @@
 #include "MusicList.h"
 #include "P4KeyboardData.h"
 #include "P4SidEngine.h"
+#include "UsbKeyboard.h"
 #include "Visuals.h"
 #include "ps5_app.h"
 #include "ps5_sce.h"
@@ -393,6 +394,14 @@ static void pressKey(int k, uint32_t source) {
   latch[0] = latch[1] = latch[2] = false;
 }
 
+// A USB keyboard's key for the C64 (the USB keyboard is further down)
+static int usbKey = -1;           // the key (p4kbKeys), or -1
+static uint8_t usbKeyMods = 0;    // with SHIFT 1, CTRL 2, C= 4
+static int usbKeyFrames = 0;      // how long it has been down
+static bool usbKeyUp = false;     // let go (it goes up after 3 frames at least)
+static uint8_t usbModsHeld = 0;   // the modifier keys alone
+static bool usbKeysToC64 = false; // false while a menu or player has the keys
+
 // Once a frame: what the C64 sees. A key stays down at least 4 frames, so
 // the C64's keyboard scan (60 times a second) can't miss a quick press.
 static void sendKey(uint32_t held) {
@@ -401,7 +410,12 @@ static void sendKey(uint32_t held) {
     if (!(held & downSource) && downFrames >= 4) downKey = -1;
   }
   uint32_t v = 0x00ffff;
-  if (downKey >= 0) {
+  if (usbKey >= 0 && usbKeyUp && usbKeyFrames >= 3) usbKey = -1;
+  if (!usbKeysToC64) usbKey = -1;
+  if (usbKey >= 0) {
+    const P4Key &K = p4kbKeys[usbKey];
+    v = (uint32_t)K.dc00 | (uint32_t)K.dc01 << 8 | (uint32_t)usbKeyMods << 16;
+  } else if (downKey >= 0) {
     const P4Key &K = p4kbKeys[downKey];
     v = (uint32_t)K.dc00 | (uint32_t)K.dc01 << 8 | (uint32_t)downMods << 16;
   } else if (modsOnlyFrames > 0) {
@@ -409,6 +423,8 @@ static void sendKey(uint32_t held) {
     v = 0x00ffff | 5u << 16;
   } else if (mode == MODE_KEYS && l1Shift) {
     v = 0x00ffff | 1u << 16;
+  } else if (usbKeysToC64 && usbModsHeld) {
+    v = 0x00ffff | (uint32_t)usbModsHeld << 16;
   }
   g_c64Key.store(v, std::memory_order_release);
 }
@@ -608,7 +624,7 @@ static void drawToast() {
 }
 
 // ============================================================ the menu
-enum ItemKind { IT_RESUME, IT_SID, IT_RESET, IT_PORT, IT_VOLUME, IT_KBDTEST, IT_QUIT, IT_HEADER, IT_FILE, IT_NONE };
+enum ItemKind { IT_RESUME, IT_SID, IT_RESET, IT_PORT, IT_VOLUME, IT_USBKBD, IT_KBDTEST, IT_QUIT, IT_HEADER, IT_FILE, IT_NONE };
 struct Item {
   ItemKind kind;
   std::string name;
@@ -621,6 +637,9 @@ static std::string lastFile; // the program or disk chosen last
 static bool sidOpenRequested = false; // (the SID player is further down)
 static bool quitArmed = false;        // QUIT chosen once: Cross again closes the app
 static bool kbdTestOpen = false;      // the USB KEYBOARD TEST screen
+static UsbKeyboard usbKb;             // a USB keyboard (taken from the PS5 while the app runs)
+static bool usbKbWanted = true;       // the menu's USB KEYBOARD: on
+static int usbKbScanIn = 0;           // frames to the next look for one
 static int fullCopies = 2; // the sides changed: both scanout buffers need them
 
 static void menuOpenNow() {
@@ -630,6 +649,7 @@ static void menuOpenNow() {
   items.push_back({IT_RESET, ""});
   items.push_back({IT_PORT, ""});
   items.push_back({IT_VOLUME, ""});
+  items.push_back({IT_USBKBD, ""});
   items.push_back({IT_KBDTEST, ""});
   items.push_back({IT_QUIT, ""});
   items.push_back({IT_HEADER, "PROGRAMS AND DISKS"});
@@ -696,7 +716,7 @@ static void menuInput() {
   }
   if (menuSel < menuTop) menuTop = menuSel;
   if (menuSel >= menuTop + kMenuRows) menuTop = menuSel - kMenuRows + 1;
-  if (menuSel <= 7) menuTop = 0;
+  if (menuSel <= 8) menuTop = 0;
   if (items[menuSel].kind != IT_QUIT) quitArmed = false;
   if (menuTop > (int)items.size() - kMenuRows) menuTop = (int)items.size() > kMenuRows ? (int)items.size() - kMenuRows : 0;
   Item &it = items[menuSel];
@@ -717,13 +737,21 @@ static void menuInput() {
     case IT_QUIT:
       if (quitArmed) {
         ps5SoundSetVolume(0);
+        usbKb.close(true); // (the keyboard back to the PS5)
         sceSystemServiceLoadExec("exit", nullptr); // (the app closes)
       }
       quitArmed = true;
       break;
     case IT_RESUME: menuOpen = false; break;
     case IT_SID: sidOpenRequested = true; break;
+    case IT_USBKBD:
+      usbKbWanted = !usbKbWanted;
+      if (!usbKbWanted) usbKb.close(true); // the PS5 has it again
+      usbKbScanIn = 0;
+      break;
     case IT_KBDTEST:
+      usbKb.close(false); // (the test takes it itself, and gives it back to the PS5)
+      usbKbScanIn = 600;
       menuOpen = false;
       kbdTestOpen = true;
       KeyboardProbe::start(g_user);
@@ -768,6 +796,9 @@ static void drawMenu() {
     case IT_RESUME: snprintf(line, sizeof(line), "BACK TO THE C64"); break;
     case IT_SID: snprintf(line, sizeof(line), "SID MUSIC PLAYER"); break;
     case IT_KBDTEST: snprintf(line, sizeof(line), "USB KEYBOARD TEST"); break;
+    case IT_USBKBD:
+      snprintf(line, sizeof(line), "USB KEYBOARD  %s", !usbKbWanted ? "OFF (THE PS5 HAS IT)" : usbKb.isOpen() ? "    IN USE" : " NONE FOUND");
+      break;
     case IT_QUIT: snprintf(line, sizeof(line), quitArmed ? "QUIT? PRESS X AGAIN" : "QUIT TO THE PS5 HOME SCREEN"); break;
     case IT_RESET: snprintf(line, sizeof(line), "RESET C64"); break;
     case IT_PORT: snprintf(line, sizeof(line), "JOYSTICK PORT        %d", joyPort); break;
@@ -1265,10 +1296,162 @@ static void drawKbdTest() {
   }
 }
 
+// ============================================================ a USB keyboard
+// Read straight from USB (common/UsbKeyboard.h): taken from the PS5 while the
+// app runs, looked for again every 2 seconds when there is none. Typing works
+// as the keys say on a PC keyboard (Shift+2 is @, Shift+' is "), as far as the
+// C64 has the character: the C64 key and its SHIFT are chosen for it. Then
+//   Esc RUN/STOP, Page Up RESTORE, Home CLR/HOME, Backspace / Delete INST/DEL,
+//   Insert INST, the arrows the cursor keys, F1-F8 as on the C64 (F2 = SHIFT F1),
+//   Ctrl CTRL, Alt / Windows C=, ` LEFTARROW, \ POUND, F12 the menu.
+// In the menu and the SID player: the arrows, Return (Cross), Esc (Circle),
+// Space (Square), Tab (Triangle), F12 (Options).
+static uint8_t usbPrev[8];
+static uint8_t usbHid = 0;     // the HID code of usbKey
+static uint32_t usbNav = 0;    // controller buttons from keys (menus)
+static int usbKeyIdx[256][2];  // HID code, PC shift up / down -> p4kbKeys index
+static int8_t usbKeyShift[256][2]; // and the C64's SHIFT: -1 as the PC's, 0 off, 1 on
+static int usbRestore = -1;
+
+static void usbMapInit() {
+  for (int i = 0; i < 256; i++) usbKeyIdx[i][0] = usbKeyIdx[i][1] = -1, usbKeyShift[i][0] = usbKeyShift[i][1] = -1;
+  auto set = [](int hid, const char *plain, int ps, const char *shifted, int ss) {
+    usbKeyIdx[hid][0] = plain ? keyByName(plain) : -1;
+    usbKeyShift[hid][0] = (int8_t)ps;
+    usbKeyIdx[hid][1] = shifted ? keyByName(shifted) : -1;
+    usbKeyShift[hid][1] = (int8_t)ss;
+  };
+  for (int c = 0; c < 26; c++) {
+    char n[2] = {(char)('A' + c), 0};
+    set(0x04 + c, n, -1, n, -1);
+  }
+  // 1-0 and their shifted characters, as the C64 types them
+  set(0x1e, "1", 0, "1", 1);           // !
+  set(0x1f, "2", 0, "AT", 0);          // @
+  set(0x20, "3", 0, "3", 1);           // #
+  set(0x21, "4", 0, "4", 1);           // $
+  set(0x22, "5", 0, "5", 1);           // %
+  set(0x23, "6", 0, "UPARROW", 0);     // ^ (the up arrow)
+  set(0x24, "7", 0, "6", 1);           // &
+  set(0x25, "8", 0, "ASTERISK", 0);    // *
+  set(0x26, "9", 0, "8", 1);           // (
+  set(0x27, "0", 0, "9", 1);           // )
+  set(0x28, "RETURN", -1, "RETURN", -1);
+  set(0x29, "RUN/STOP", -1, "RUN/STOP", -1);
+  set(0x2a, "INST/DEL", 0, "INST/DEL", 1);
+  set(0x2c, "SPACE", -1, "SPACE", -1);
+  set(0x2d, "MINUS", 0, "LEFTARROW", 0); // - and _ (the left arrow)
+  set(0x2e, "EQUALS", 0, "PLUS", 0);     // = +
+  set(0x2f, "COLON", 1, "COLON", 1);     // [ (SHIFT :)
+  set(0x30, "SEMICOLON", 1, "SEMICOLON", 1); // ] (SHIFT ;)
+  set(0x31, "POUND", 0, "POUND", 1);     // \ (the pound)
+  set(0x33, "SEMICOLON", 0, "COLON", 0); // ; :
+  set(0x34, "7", 1, "2", 1);             // ' "
+  set(0x35, "LEFTARROW", 0, "UPARROW", 1); // ` and ~ (pi)
+  set(0x36, "COMMA", 0, "COMMA", 1);     // , <
+  set(0x37, "PERIOD", 0, "PERIOD", 1);   // . >
+  set(0x38, "SLASH", 0, "SLASH", 1);     // / ?
+  for (int f = 0; f < 4; f++) {          // F1-F8
+    const char *n[] = {"F1", "F3", "F5", "F7"};
+    set(0x3a + f * 2, n[f], 0, n[f], 1);
+    set(0x3b + f * 2, n[f], 1, n[f], 1);
+  }
+  set(0x49, "INST/DEL", 1, "INST/DEL", 1); // Insert
+  set(0x4a, "CLR/HOME", -1, "CLR/HOME", -1);
+  set(0x4c, "INST/DEL", 0, "INST/DEL", 1); // Delete
+  set(0x4d, "CLR/HOME", 1, "CLR/HOME", 1); // End: CLR
+  set(0x4f, "cursor right", 0, "cursor right", 0);
+  set(0x50, "cursor left", 0, "cursor left", 0);
+  set(0x51, "cursor down", 0, "cursor up", 0);
+  set(0x52, "cursor up", 0, "cursor up", 0);
+  usbRestore = keyByName("RESTORE");
+}
+
+// The C64 key and its modifiers for a HID code, with the PC's modifiers as they are
+static bool usbTranslate(uint8_t hid, uint8_t pcMods, int &key, uint8_t &mods) {
+  int sh = (pcMods & 0x22) ? 1 : 0;
+  key = usbKeyIdx[hid][sh];
+  if (key < 0) return false;
+  int s = usbKeyShift[hid][sh];
+  mods = (uint8_t)((pcMods & 0x11) ? 2 : 0) | (uint8_t)((pcMods & 0xcc) ? 4 : 0);
+  if (s == 1 || (s == -1 && sh)) mods |= 1;
+  mods |= p4kbKeys[key].mods; // (the cursor keys' own SHIFT)
+  return true;
+}
+
+static void usbReport(const uint8_t *r) {
+  bool held[256] = {};
+  for (int k = 2; k < 8; k++)
+    if (r[k] >= 4) held[r[k]] = true;
+  // the menus' buttons
+  uint32_t nav = 0;
+  if (held[0x52]) nav |= RAW_UP;
+  if (held[0x51]) nav |= RAW_DOWN;
+  if (held[0x50]) nav |= RAW_LEFT;
+  if (held[0x4f]) nav |= RAW_RIGHT;
+  if (held[0x28]) nav |= RAW_CROSS;
+  if (held[0x29]) nav |= RAW_CIRCLE;
+  if (held[0x2c]) nav |= RAW_SQUARE;
+  if (held[0x2b]) nav |= RAW_TRIANGLE;
+  if (held[0x45]) nav |= RAW_OPTIONS;
+  usbNav = nav;
+  // the newest key down
+  uint8_t fresh = 0;
+  for (int k = 2; k < 8; k++) {
+    uint8_t c = r[k];
+    if (c < 4) continue;
+    bool before = false;
+    for (int j = 2; j < 8; j++) before |= usbPrev[j] == c;
+    if (!before) fresh = c;
+  }
+  if (fresh == 0x4b && usbKeysToC64) pressKey(usbRestore, 0); // Page Up: RESTORE
+  int key;
+  uint8_t mods;
+  if (fresh && fresh != 0x45 && fresh != 0x4b && usbTranslate(fresh, r[0], key, mods)) {
+    usbKey = key;
+    usbKeyMods = mods;
+    usbHid = fresh;
+    usbKeyFrames = 0;
+    usbKeyUp = false;
+  } else if (usbKey >= 0 && held[usbHid] && usbTranslate(usbHid, r[0], key, mods)) {
+    usbKey = key; // (SHIFT pressed or let go while it is down)
+    usbKeyMods = mods;
+  }
+  if (usbKey >= 0 && !held[usbHid]) usbKeyUp = true;
+  usbModsHeld = (uint8_t)(((r[0] & 0x22) ? 1 : 0) | ((r[0] & 0x11) ? 2 : 0) | ((r[0] & 0xcc) ? 4 : 0));
+  memcpy(usbPrev, r, 8);
+}
+
+static void usbKeyboardFrame() {
+  if (usbKey >= 0) usbKeyFrames++;
+  if (kbdTestOpen || !usbKbWanted) {
+    usbNav = 0;
+    return;
+  }
+  if (!usbKb.isOpen()) {
+    if (usbKb.lost) usbKb.close(false); // (unplugged)
+    usbNav = 0;
+    usbModsHeld = 0;
+    if (usbKey >= 0) usbKeyUp = true;
+    if (--usbKbScanIn > 0) return;
+    usbKbScanIn = 120;
+    UsbKeyboard::Info i;
+    if (UsbKeyboard::find(i) && usbKb.open(i) == 0) {
+      memset(usbPrev, 0, sizeof(usbPrev));
+      toast("USB KEYBOARD");
+    }
+    return;
+  }
+  uint8_t r[8];
+  if (usbKb.poll(r)) usbReport(r);
+}
+
 // ============================================================ once a frame
 static void frameInput() {
   padRead();
-  held = padHeld;
+  usbKeysToC64 = !menuOpen && !sidOpen && !kbdTestOpen;
+  usbKeyboardFrame();
+  held = padHeld | (usbKeysToC64 ? (usbNav & RAW_OPTIONS) : usbNav);
   pressed = held & ~prevHeld;
   prevHeld = held;
 
@@ -1279,6 +1462,7 @@ static void frameInput() {
     if (pressed & (RAW_CIRCLE | RAW_OPTIONS)) {
       KeyboardProbe::stop(); // (the keyboard back to the PS5)
       kbdTestOpen = false;
+      usbKbScanIn = 120;     // (then this app takes it again, if USB KEYBOARD is on)
       drawSides();
     }
     sendKey(held);
@@ -1373,6 +1557,7 @@ int main() {
   kReturn = keyByName("RETURN");
   kDel = keyByName("INST/DEL");
   kF1 = keyByName("F1");
+  usbMapInit();
   selKey = kReturn;
   drawSides();
   copyBlocks(scanout[0], 0, kBlocksX - 1);
