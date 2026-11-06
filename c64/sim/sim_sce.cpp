@@ -97,6 +97,10 @@ extern "C" int sceKernelLoadStartModule(const char *path, size_t, const void *, 
   if (getenv("SIM_NOKBD") || !strstr(path, "libSceKeyboard")) return (int)0x80020002;
   return 7;
 }
+extern "C" int sceSysmoduleLoadModuleByNameInternal(const char *name, uint32_t, uint64_t, uint64_t, int *) {
+  fprintf(stderr, "SIM: sysmodule %s\n", name);
+  return (int)0x805a1000;
+}
 extern "C" int sceKernelDlsym(int, const char *symbol, void **address) {
   *address = nullptr;
   if (!strcmp(symbol, "sceKeyboardInit")) *address = (void *)kbInit;

@@ -119,7 +119,36 @@ void start(int32_t initialUser) {
     if (m >= 0 && strstr(p, "Keyboard") && mod < 0) mod = m;
   }
 
-  void *fInit = nullptr, *fOpen = nullptr, *fState = nullptr, *fRead = nullptr;
+  // 3. The system's own module loader, by name (the keyboard library, and the
+  // IME library, which gave PS4 games the keyboard's keys)
+  if (mod < 0) {
+    static const char *names[] = {"libSceKeyboard", "libSceKeyboard.sprx", "libSceIme", "libSceIme.sprx"};
+    int (*volatile byName)(const char *, uint32_t, uint64_t, uint64_t, int *) = sceSysmoduleLoadModuleByNameInternal;
+    if (!byName) step("NO SYSMODULE LOADER (NOT IMPORTED)");
+    for (const char *n : names) {
+      if (!byName) break;
+      int result = 0;
+      logLine("about to call sceSysmoduleLoadModuleByNameInternal(\"%s\")", n);
+      int r = byName(n, 0, 0, 0, &result);
+      step("SYSMODULE %s: %08X", n, (unsigned)r);
+    }
+    static const char *loaded[] = {"libSceKeyboard.sprx", "libSceIme.sprx"};
+    for (const char *n : loaded) {
+      int m = sceKernelLoadStartModule(n, 0, nullptr, 0, nullptr, nullptr);
+      step("NOW LOADED? %s: %08X", n, (unsigned)m);
+      if (m >= 0 && strstr(n, "Keyboard")) mod = m;
+      if (m >= 0 && strstr(n, "Ime")) {
+        void *a = nullptr, *b = nullptr;
+        sceKernelDlsym(m, "sceImeKeyboardOpen", &a);
+        sceKernelDlsym(m, "sceImeUpdate", &b);
+        step("IME: KEYBOARDOPEN %s UPDATE %s", a ? "Y" : "N", b ? "Y" : "N");
+      }
+    }
+  }
+
+  // (volatile: the imports' addresses are read at run time - the PS5 leaves
+  // one it couldn't find at 0, which the compiler would otherwise assume can't happen)
+  void *volatile fInit = nullptr, *volatile fOpen = nullptr, *volatile fState = nullptr, *volatile fRead = nullptr;
   if (mod < 0) {
 #ifdef KBD_DIRECT
     // 3. This build also imports the keyboard functions the usual way: the PS5
@@ -134,10 +163,12 @@ void start(int32_t initialUser) {
     return;
 #endif
   } else {
-    sceKernelDlsym(mod, "sceKeyboardInit", &fInit);
-    sceKernelDlsym(mod, "sceKeyboardOpen", &fOpen);
-    sceKernelDlsym(mod, "sceKeyboardReadState", &fState);
-    sceKernelDlsym(mod, "sceKeyboardRead", &fRead);
+    void *a = nullptr, *b = nullptr, *c = nullptr, *d = nullptr;
+    sceKernelDlsym(mod, "sceKeyboardInit", &a);
+    sceKernelDlsym(mod, "sceKeyboardOpen", &b);
+    sceKernelDlsym(mod, "sceKeyboardReadState", &c);
+    sceKernelDlsym(mod, "sceKeyboardRead", &d);
+    fInit = a, fOpen = b, fState = c, fRead = d;
   }
 
   // 4. its functions
