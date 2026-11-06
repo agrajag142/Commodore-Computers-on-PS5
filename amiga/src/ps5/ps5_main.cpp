@@ -1436,11 +1436,17 @@ static void drawSides() {
 static void drawStatus() {
   static char shown[200] = "";
   char now[200];
-  snprintf(now, sizeof(now), "%s|%d|%s", diskInDrive.c_str(), emuFps.load(), status);
+  bool led = running && drive_led();
+  snprintf(now, sizeof(now), "%s|%d|%s|%d", diskInDrive.c_str(), emuFps.load(), status, led);
   if (strcmp(now, shown) == 0) return;
   snprintf(shown, sizeof(shown), "%s", now);
   fillRect(0, 900, 320, 180, kSideBg);
   text(28, 910, "DF0:", 2, kDim);
+  // the drive light, as on the A500's case: green while the motor turns
+  int lx = 28 + textWidth("DF0:", 2) + 16;
+  fillRect(lx, 914, 44, 20, led ? rgb(0x10, 0x40, 0x10) : rgb(0x0c, 0x18, 0x0c));
+  fillRect(lx + 3, 917, 38, 14, led ? rgb(0x30, 0xff, 0x40) : rgb(0x1c, 0x34, 0x1c));
+  if (led) fillRect(lx + 6, 919, 14, 4, rgb(0xc0, 0xff, 0xc8)); // (a shine)
   std::string d = diskInDrive.empty() ? "(empty)" : diskInDrive;
   if (d.size() > 34) d = d.substr(0, 34);
   // the name in two lines of 17

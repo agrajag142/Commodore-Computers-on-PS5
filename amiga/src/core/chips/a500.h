@@ -140,6 +140,7 @@ void    drive_eject(void);              /* Waveshare P4: disk out */
 int     drive_track(void);
 int     drive_side(void);
 int     drive_motor_on(void);
+int     drive_led(void);   /* PS5 port: the drive light */
 const uint8_t *drive_adf(void);
 
 /* ---- disco: MFM + DMA (disk.cpp) ---- */

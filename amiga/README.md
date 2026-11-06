@@ -80,8 +80,8 @@ reset (with the disk in DF0: still in), the volume, the USB keyboard (on / off),
 the disks: **Cross** restarts the Amiga with that disk in
 DF0:, **Square** swaps it in without a restart (for a game's or demo's next disk - the old one comes
 out for half a second first, so the Amiga notices). The one in DF0: is orange. The Amiga keeps
-running behind the menu. The bottom left shows the disk in DF0: and the frames per second (50 is
-full speed).
+running behind the menu. The bottom left shows the disk in DF0:, the drive light (green while the drive's motor turns, as on
+the A500's case) and the frames per second (50 is full speed).
 
 ## MOD player
 

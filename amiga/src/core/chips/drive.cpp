@@ -92,6 +92,7 @@ int drive_insert_adf(const char *path)
 int  drive_track(void)    { return track; }
 int  drive_side(void)     { return side; }
 int  drive_motor_on(void) { return motor && disk_present; }
+int  drive_led(void) { return motor; }  /* PS5 port: the drive light (on with the motor, as on the A500) */
 const uint8_t *drive_adf(void) { return disk_present ? adf : NULL; }
 
 #define DRVLOG(...) do { if (evlog < 200) { logmsg(__VA_ARGS__); evlog++; } } while (0)
