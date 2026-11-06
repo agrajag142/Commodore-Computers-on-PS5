@@ -35,6 +35,7 @@ typedef struct {
     uint8_t  pra, prb, ddra, ddrb;
     uint16_t ta, tb, ta_latch, tb_latch;
     uint8_t  cra, crb;
+    uint8_t  sdr;              /* PS5 port: the serial data register (the keyboard) */
     uint8_t  icr_data, icr_mask;
     uint32_t tod, tod_latch, tod_alarm;
     int      tod_latched, tod_running;
@@ -48,6 +49,11 @@ void    cia_reset(void);
 uint8_t cia_read (cia_t *c, int reg);
 void    cia_write(cia_t *c, int reg, uint8_t v);
 void    cia_tick (int eclocks);      /* E-clock = CPU/10 */
+/* PS5 port: the keyboard. kbd_key() from any thread (a raw key code 0x00-0x67,
+ * up = 1 when let go); cia_kbd_vsync() once a frame on the emulator's thread
+ * sends the next one to CIA-A, as the keyboard does, after the Amiga's handshake. */
+void    kbd_key(uint8_t rawkey, int up);
+void    cia_kbd_vsync(void);
 
 /* ---- chipset custom (0xDFF000) ---- */
 extern uint16_t intena, intreq, dmacon, adkcon;

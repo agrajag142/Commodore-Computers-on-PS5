@@ -49,8 +49,27 @@ The picture is the Amiga's 640 x 256 at 2 x 4 (1280 x 1024), the full height of 
 | Triangle | the MOD player, straight away |
 | Options | the menu |
 
+**A USB keyboard** plugged into the PS5 is the Amiga's keyboard, and the mouse of a wireless set on
+the same receiver is the Amiga's mouse too (with the stick and the touchpad). The app takes them
+from the PS5 while it runs (and gives them back when it quits, or with USB keyboard in the menu set
+to off), and looks for them every 2 seconds, so they can be plugged in any time. The keys go by
+their place, as on an Amiga keyboard laid out like a US PC one, and:
+
+| PC key | Amiga |
+| --- | --- |
+| Windows / Menu (or right Windows) | left / right Amiga |
+| Alt | Alt |
+| F11 | HELP |
+| Caps Lock | Caps Lock (it locks) |
+| Ctrl + both Amiga keys | the reset |
+| F12 | the menu |
+
+In the menu and the MOD player: the arrows, Return (Cross), Esc (Circle), Space (Square), Tab
+(Triangle), F12 (Options). The emulator's CIA-A now has its serial port: each key goes to the
+Amiga as the real keyboard sends it, and the next one after the Amiga's handshake.
+
 Mouse and joystick work at the same time. **Menu** (Options): back to the Amiga, the MOD player,
-reset (with the disk in DF0: still in), the volume, quit to the PS5 home screen (Cross twice), and
+reset (with the disk in DF0: still in), the volume, the USB keyboard (on / off), quit to the PS5 home screen (Cross twice), and
 the disks: **Cross** restarts the Amiga with that disk in
 DF0:, **Square** swaps it in without a restart (for a game's or demo's next disk - the old one comes
 out for half a second first, so the Amiga notices). The one in DF0: is orange. The Amiga keeps
@@ -139,12 +158,12 @@ SIM_APP0=/path/to/that/folder SIM_FRAMES=600 SIM_SHOTS=300,600 amiga/sim/out/ami
 
 Without a Kickstart, `tools/testrom.s` stands in: assembled with
 [vasm](http://sun.hasenbraten.de/vasm/) (`vasmm68k_mot -Fbin -o testrom.rom testrom.s`), it shows
-stripes through the copper and a bitplane, a sprite the mouse moves, a tone on Paula, and changes
-colour with the mouse buttons and the joystick. It boots nothing else.
+stripes through the copper and a bitplane, a sprite the mouse moves, a tone on Paula, changes
+colour with the mouse buttons and the joystick, and draws each key code it gets from the keyboard
+as an 8-pixel band at the top left (`SIM_USBKEYS` as for the C64). It boots nothing else.
 
 ## Not yet
 
-- A keyboard (the emulator has none yet).
 - Custom-loader disks: standard AmigaDOS disks work; many games load with their own track loaders.
 - 50 frames a second on a 60 Hz TV: one picture in five is shown twice.
 

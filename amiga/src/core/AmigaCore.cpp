@@ -21,6 +21,7 @@ extern int vpos;
 extern int disk_irq_pending;
 void cia_tod_hsync(void);
 void cia_tod_vsync(void);
+void cia_kbd_vsync(void);
 extern void (*denise_line_cb)(int vpos, const uint16_t *pixels, int w);
 int cur_frame = 0;
 
@@ -228,6 +229,7 @@ void amigaRunFrame(AmigaFrameTimes *times) {
     tChip += amigaMicros() - d;
   }
   cia_tod_vsync();
+  cia_kbd_vsync(); // (PS5 port: the keyboard)
   intreq_set(5); // vertical blank
   if (times) {
     times->cpuUs = (uint32_t)tCpu;

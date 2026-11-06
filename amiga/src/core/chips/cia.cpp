@@ -9,11 +9,13 @@
 #include "a500.h"
 #include <cstdio>
 #include <string.h>
+#include <atomic>
 extern "C" {
 #include "m68k.h"
 }
 
 cia_t cia_a, cia_b;
+static int kbd_waiting = 0, kbd_wait_frames = 0, kbd_hs = 0; /* PS5 port: the keyboard (below) */
 
 static void cia_init(cia_t *c, const char *name, int irqbit)
 {
@@ -30,6 +32,7 @@ void cia_reset(void)
 {
     cia_init(&cia_a, "CIA-A", 3);
     cia_init(&cia_b, "CIA-B", 13);
+    kbd_waiting = 0; kbd_hs = 0;   /* (PS5 port) */
     ovl = 1;
 }
 
@@ -57,6 +60,44 @@ static void ovl_update(void)
 }
 
 static uint8_t cia_read_inner(cia_t *c, int reg);
+
+/* ---- PS5 port: the keyboard ----
+ * The Amiga keyboard sends each key as 8 bits on CIA-A's serial port: the raw
+ * key code shifted left one, its up/down bit (bit 7) moved into bit 0, all
+ * inverted on the wire. The Amiga answers each byte with a handshake (SP set
+ * to output, CRA bit 6, for 85 microseconds) and only then gets the next. */
+static uint8_t kbd_ring[128];
+static std::atomic<unsigned> kbd_head{0}, kbd_tail{0};
+
+void kbd_key(uint8_t rawkey, int up)
+{
+    unsigned h = kbd_head.load(std::memory_order_relaxed);
+    if (h - kbd_tail.load(std::memory_order_acquire) >= sizeof kbd_ring) return; /* full: dropped */
+    kbd_ring[h % sizeof kbd_ring] = (uint8_t)((rawkey & 0x7F) | (up ? 0x80 : 0));
+    kbd_head.store(h + 1, std::memory_order_release);
+}
+
+static void kbd_handshake(int output)
+{
+    if (output) kbd_hs = 1;
+    else if (kbd_hs) { kbd_hs = 0; kbd_waiting = 0; }   /* handshake over: the next key may come */
+}
+
+static void icr_set(cia_t *c, uint8_t bit);
+
+void cia_kbd_vsync(void)
+{
+    if (kbd_waiting && ++kbd_wait_frames > 10) kbd_waiting = 0; /* no handshake (as the keyboard: give up) */
+    if (kbd_waiting) return;
+    unsigned t = kbd_tail.load(std::memory_order_relaxed);
+    if (t == kbd_head.load(std::memory_order_acquire)) return;
+    uint8_t code = kbd_ring[t % sizeof kbd_ring];
+    kbd_tail.store(t + 1, std::memory_order_release);
+    cia_a.sdr = (uint8_t)~((code << 1) | (code >> 7));
+    kbd_waiting = 1;
+    kbd_wait_frames = 0;
+    icr_set(&cia_a, 0x08);                               /* SP: a byte is in */
+}
 
 extern int drive_selected(void);
 
@@ -114,7 +155,7 @@ static uint8_t cia_read_inner(cia_t *c, int reg)
         return (uint8_t)(c->tod_latch >> 16);
     }
     case 0xB: return 0;  /* 8520: non usato */
-    case 0xC: return 0;  /* SDR: fuori perimetro */
+    case 0xC: return c->sdr;  /* PS5 port: the keyboard's byte */
     case 0xD: {          /* ICR: lettura azzera */
         uint8_t v = c->icr_data;
         c->icr_data = 0;
@@ -162,7 +203,9 @@ void cia_write(cia_t *c, int reg, uint8_t v)
               break;
     case 0xD: if (v & 0x80) c->icr_mask |= (v & 0x1F); else c->icr_mask &= ~(v & 0x1F);
               break;
-    case 0xE: c->cra = v & 0xEF; if (v & 0x10) c->ta = c->ta_latch; break; /* force load */
+    case 0xE: c->cra = v & 0xEF; if (v & 0x10) c->ta = c->ta_latch; /* force load */
+              if (c == &cia_a) kbd_handshake(v & 0x40);
+              break;
     case 0xF: c->crb = v & 0xEF; if (v & 0x10) c->tb = c->tb_latch; break;
     }
 }

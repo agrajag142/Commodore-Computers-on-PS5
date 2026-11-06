@@ -88,60 +88,56 @@ public:
     return found;
   }
 
-  // Takes the keyboard from the PS5 and starts reading. 0 = ok, else the
+  // Takes the keyboard from the PS5 and starts reading (with withMouse, a boot
+  // mouse on the same device too: a wireless set's receiver). 0 = ok, else the
   // step that failed (1 open, 2 FS_INIT, 3 FS_OPEN, 4 FS_START); errno says why.
-  int open(const Info &i) {
+  int open(const Info &i, bool withMouse = false) {
     close(false);
     info = i;
+    mouseDX = mouseDY = 0;
+    mouseButtons = 0;
 #ifdef PS5_SIM
+    (void)withMouse;
     if (!getenv("SIM_USBKEYS")) {
       errno = ENODEV;
       return 1;
     }
     fd = 1;
-    epOpen = true;
+    ep[0].open = true;
     return 0;
 #else
     fd = ::open(i.path, O_RDWR);
     if (fd < 0) return 1;
+    bool mouse = withMouse && i.mouseEp >= 0;
     int q = i.iface;
     detachRc = ioctl(fd, USB_IFACE_DRIVER_DETACH, &q);
     detachErr = detachRc < 0 ? errno : 0;
+    if (mouse && i.mouseIface != i.iface) {
+      q = i.mouseIface;
+      ioctl(fd, USB_IFACE_DRIVER_DETACH, &q);
+    }
     memset(fs, 0, sizeof(fs));
     struct usb_fs_init init;
     memset(&init, 0, sizeof(init));
     init.pEndpoints = fs;
-    init.ep_index_max = 1;
+    init.ep_index_max = mouse ? 2 : 1;
     if (ioctl(fd, USB_FS_INIT, &init) != 0) return failed(2);
     fsInit = true;
-    struct usb_fs_open op;
-    memset(&op, 0, sizeof(op));
-    op.ep_index = 0;
-    op.ep_no = (uint8_t)i.ep;
-    op.max_bufsize = 64;
-    op.max_frames = 1;
-    if (ioctl(fd, USB_FS_OPEN, &op) != 0) return failed(3);
-    epOpen = true;
-    reqLen = op.max_packet_length ? op.max_packet_length : 8; // exactly one packet (as the bridge found)
-    if (reqLen > 64) reqLen = 64;
-    // boot protocol (SET_PROTOCOL 0): the 8-byte reports, whatever the keyboard's own format
-    struct usb_ctl_request r;
-    memset(&r, 0, sizeof(r));
-    r.ucr_request.bmRequestType = UT_WRITE_CLASS_INTERFACE;
-    r.ucr_request.bRequest = 0x0b;
-    USETW(r.ucr_request.wValue, 0);
-    USETW(r.ucr_request.wIndex, (uint16_t)i.iface);
-    USETW(r.ucr_request.wLength, 0);
-    protocolRc = ioctl(fd, USB_DO_REQUEST, &r);
-    if (arm() < 0) return failed(4);
+    if (!openEp(0, i.ep)) return failed(3);
+    protocolRc = bootProtocol(i.iface);
+    if (mouse && openEp(1, i.mouseEp) && i.mouseIface != i.iface) bootProtocol(i.mouseIface);
+    if (arm(0) < 0) return failed(4);
+    if (ep[1].open) arm(1);
     return 0;
 #endif
   }
 
-  // Once a frame (it never waits): 1 and the newest report when one came.
+  // Once a frame (it never waits): 1 and the newest keyboard report when one
+  // came. The mouse's movement adds up in mouseDX / mouseDY (take it with
+  // takeMouse), its buttons in mouseButtons (1 left, 2 right, 4 middle).
   int poll(uint8_t report[8]) {
 #ifndef PS5_SIM
-    if (fd < 0 || !epOpen) return 0;
+    if (fd < 0 || !ep[0].open) return 0;
     int got = 0;
     for (int guard = 0; guard < 64; guard++) {
       struct usb_fs_complete c;
@@ -151,21 +147,32 @@ public:
         if (errno == ENXIO || errno == ENODEV) lost = true;
         break; // EBUSY: nothing finished
       }
-      inFlight = false;
+      int e = c.ep_index;
+      if (e > 1 || !ep[e].open) continue;
+      Ep &E = ep[e];
+      E.inFlight = false;
       completions++;
-      if (fs[0].status == 0 && fs[0].aFrames > 0 && lens[0] > 0) {
-        uint32_t n = lens[0] < 8 ? lens[0] : 8;
-        memset(report, 0, 8);
-        memcpy(report, buf, n);
-        lastLen = lens[0];
-        reports++;
-        got = 1;
-      } else if (fs[0].status != 0) {
-        lastStatus = fs[0].status;
-        if (fs[0].status == 22) clearStall = true; // USB_ERR_STALLED
+      if (fs[e].status == 0 && fs[e].aFrames > 0 && E.len[0] > 0) {
+        if (e == 0) {
+          uint32_t n = E.len[0] < 8 ? E.len[0] : 8;
+          memset(report, 0, 8);
+          memcpy(report, E.buf, n);
+          lastLen = E.len[0];
+          reports++;
+          got = 1;
+        } else if (E.len[0] >= 3) { // the boot mouse: buttons, x, y
+          mouseButtons = E.buf[0] & 7;
+          mouseDX += (int8_t)E.buf[1];
+          mouseDY += (int8_t)E.buf[2];
+          mouseReports++;
+        }
+      } else if (fs[e].status != 0) {
+        lastStatus = fs[e].status;
+        if (fs[e].status == 22) E.clearStall = true; // USB_ERR_STALLED
       }
     }
-    if (!inFlight && !lost) arm();
+    for (int e = 0; e < 2 && !lost; e++)
+      if (ep[e].open && !ep[e].inFlight) arm(e);
     return got;
 #else
     if (fd < 0) return 0;
@@ -175,25 +182,36 @@ public:
 #endif
   }
 
+  // The mouse's movement since the last time
+  void takeMouse(int &dx, int &dy) {
+    dx = mouseDX;
+    dy = mouseDY;
+    mouseDX = mouseDY = 0;
+  }
+
   // Stops reading; giveBack: the PS5 gets the keyboard again (re-enumerated).
   void close(bool giveBack = true) {
 #ifndef PS5_SIM
     if (fd < 0) return;
-    if (epOpen && inFlight) {
-      struct usb_fs_stop s;
-      memset(&s, 0, sizeof(s));
-      ioctl(fd, USB_FS_STOP, &s);
-      struct usb_fs_complete c;
-      for (int k = 0; k < 8; k++) {
-        memset(&c, 0, sizeof(c));
-        if (ioctl(fd, USB_FS_COMPLETE, &c) != 0) break;
+    for (int e = 0; e < 2; e++)
+      if (ep[e].open && ep[e].inFlight) {
+        struct usb_fs_stop s;
+        memset(&s, 0, sizeof(s));
+        s.ep_index = (uint8_t)e;
+        ioctl(fd, USB_FS_STOP, &s);
       }
-    }
-    if (epOpen) {
-      struct usb_fs_close c;
+    struct usb_fs_complete c;
+    for (int k = 0; k < 8; k++) {
       memset(&c, 0, sizeof(c));
-      ioctl(fd, USB_FS_CLOSE, &c);
+      if (ioctl(fd, USB_FS_COMPLETE, &c) != 0) break;
     }
+    for (int e = 0; e < 2; e++)
+      if (ep[e].open) {
+        struct usb_fs_close cl;
+        memset(&cl, 0, sizeof(cl));
+        cl.ep_index = (uint8_t)e;
+        ioctl(fd, USB_FS_CLOSE, &cl);
+      }
     if (fsInit) {
       struct usb_fs_uninit u;
       memset(&u, 0, sizeof(u));
@@ -207,15 +225,19 @@ public:
 #endif
     (void)giveBack;
     fd = -1;
-    fsInit = epOpen = inFlight = lost = clearStall = false;
+    fsInit = lost = false;
+    for (auto &E : ep) E.open = E.inFlight = E.clearStall = false;
+    mouseButtons = 0;
   }
 
-  bool isOpen() const { return fd >= 0 && epOpen && !lost; }
+  bool isOpen() const { return fd >= 0 && ep[0].open && !lost; }
+  bool hasMouse() const { return isOpen() && ep[1].open; }
 
   // for the test screen
   Info info{};
   int detachRc = 0, detachErr = 0, protocolRc = 0, lastStatus = 0;
-  uint32_t completions = 0, reports = 0, lastLen = 0;
+  uint32_t completions = 0, reports = 0, lastLen = 0, mouseReports = 0;
+  int mouseDX = 0, mouseDY = 0, mouseButtons = 0;
   bool lost = false;
 
   // The boot-protocol HID interfaces (class 3, subclass 1; protocol 1 keyboard,
@@ -243,13 +265,16 @@ public:
 
 private:
   int fd = -1;
-  bool fsInit = false, epOpen = false, inFlight = false, clearStall = false;
-  uint32_t reqLen = 8;
-  uint8_t buf[64];
-  void *bufs[1] = {buf};
-  uint32_t lens[1] = {0};
+  bool fsInit = false;
+  struct Ep {
+    bool open = false, inFlight = false, clearStall = false;
+    uint32_t reqLen = 8;
+    uint8_t buf[64];
+    void *bufs[1];
+    uint32_t len[1];
+  } ep[2];
 #ifndef PS5_SIM
-  struct usb_fs_endpoint fs[1];
+  struct usb_fs_endpoint fs[2];
 
   int failed(int step) {
     int e = errno;
@@ -257,22 +282,47 @@ private:
     errno = e;
     return step;
   }
-  int arm() {
-    lens[0] = reqLen;
-    bufs[0] = buf;
-    fs[0].ppBuffer = bufs;
-    fs[0].pLength = lens;
-    fs[0].nFrames = 1;
-    fs[0].aFrames = 0;
-    fs[0].status = 0;
-    fs[0].timeout = USB_FS_TIMEOUT_NONE; // an interrupt endpoint just waits for a key
-    fs[0].flags = USB_FS_FLAG_SINGLE_SHORT_OK | USB_FS_FLAG_MULTI_SHORT_OK | (clearStall ? USB_FS_FLAG_CLEAR_STALL : 0);
-    struct usb_fs_start s;
-    memset(&s, 0, sizeof(s));
-    s.ep_index = 0;
-    if (ioctl(fd, USB_FS_START, &s) == 0 || errno == EBUSY) {
-      inFlight = true;
-      clearStall = false;
+  bool openEp(int e, int addr) {
+    struct usb_fs_open op;
+    memset(&op, 0, sizeof(op));
+    op.ep_index = (uint8_t)e;
+    op.ep_no = (uint8_t)addr;
+    op.max_bufsize = 64;
+    op.max_frames = 1;
+    if (ioctl(fd, USB_FS_OPEN, &op) != 0) return false;
+    ep[e].open = true;
+    ep[e].reqLen = op.max_packet_length ? op.max_packet_length : 8; // exactly one packet (as the bridge found)
+    if (ep[e].reqLen > 64) ep[e].reqLen = 64;
+    return true;
+  }
+  // boot protocol (SET_PROTOCOL 0): the boot reports, whatever the device's own format
+  int bootProtocol(int iface) {
+    struct usb_ctl_request r;
+    memset(&r, 0, sizeof(r));
+    r.ucr_request.bmRequestType = UT_WRITE_CLASS_INTERFACE;
+    r.ucr_request.bRequest = 0x0b;
+    USETW(r.ucr_request.wValue, 0);
+    USETW(r.ucr_request.wIndex, (uint16_t)iface);
+    USETW(r.ucr_request.wLength, 0);
+    return ioctl(fd, USB_DO_REQUEST, &r);
+  }
+  int arm(int e) {
+    Ep &E = ep[e];
+    E.len[0] = E.reqLen;
+    E.bufs[0] = E.buf;
+    fs[e].ppBuffer = E.bufs;
+    fs[e].pLength = E.len;
+    fs[e].nFrames = 1;
+    fs[e].aFrames = 0;
+    fs[e].status = 0;
+    fs[e].timeout = USB_FS_TIMEOUT_NONE; // an interrupt endpoint just waits for a key
+    fs[e].flags = USB_FS_FLAG_SINGLE_SHORT_OK | USB_FS_FLAG_MULTI_SHORT_OK | (E.clearStall ? USB_FS_FLAG_CLEAR_STALL : 0);
+    struct usb_fs_start st;
+    memset(&st, 0, sizeof(st));
+    st.ep_index = (uint8_t)e;
+    if (ioctl(fd, USB_FS_START, &st) == 0 || errno == EBUSY) {
+      E.inFlight = true;
+      E.clearStall = false;
       return 1;
     }
     if (errno == ENXIO || errno == ENODEV) lost = true;

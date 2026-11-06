@@ -25,6 +25,7 @@
 #include "ModEngine.h"
 #include "MusicList.h"
 #include "Visuals.h"
+#include "UsbKeyboard.h"
 #include "ps5_sce.h"
 #include "ps5_system.h"
 
@@ -823,8 +824,170 @@ static void drawModVisuals(int view) {
   else modVisuals.draw(g_frame, view - 2, in, font, dt);
 }
 
+// ============================================================ a USB keyboard (and mouse)
+// Read straight from USB (common/UsbKeyboard.h): taken from the PS5 while the
+// app runs, looked for again every 2 seconds when there is none. The keys go
+// to the Amiga by their place (an Amiga keyboard laid out as a US PC one):
+//   Windows / Menu the left / right Amiga keys, Alt Alt, F11 HELP, F12 the menu,
+//   Ctrl + both Windows keys (or Windows + Menu) the Amiga's reset.
+// A wireless set's mouse on the same receiver is the Amiga's mouse too. In the
+// menu and the MOD player: the arrows, Return (Cross), Esc (Circle), Space
+// (Square), Tab (Triangle), F12 (Options).
+static UsbKeyboard usbKb;
+static bool usbKbWanted = true; // the menu's USB keyboard: on
+static int usbKbScanIn = 0;     // frames to the next look for one
+static bool usbToAmiga = false; // false while the menu or the MOD player has the keys
+static uint8_t usbPrev[8];
+static uint32_t usbNav = 0;     // controller buttons from keys (menus)
+static bool amigaKeyDown[0x68]; // what the Amiga has been told is down
+static bool capsOn = false;
+static int usbMouseButtons = 0; // 1 left, 2 right
+
+// HID usage -> Amiga raw key code (0xff: none)
+static uint8_t hidToAmiga(uint8_t h) {
+  static const uint8_t letters[26] = {0x20, 0x35, 0x33, 0x22, 0x12, 0x23, 0x24, 0x25, 0x17, 0x26, 0x27, 0x28, 0x37,
+                                      0x36, 0x18, 0x19, 0x10, 0x13, 0x21, 0x14, 0x16, 0x34, 0x11, 0x32, 0x15, 0x31};
+  if (h >= 0x04 && h <= 0x1d) return letters[h - 0x04];
+  if (h >= 0x1e && h <= 0x27) return (uint8_t)(0x01 + h - 0x1e); // 1-9, 0
+  if (h >= 0x3a && h <= 0x43) return (uint8_t)(0x50 + h - 0x3a); // F1-F10
+  static const uint8_t keypad19[9] = {0x1d, 0x1e, 0x1f, 0x2d, 0x2e, 0x2f, 0x3d, 0x3e, 0x3f};
+  if (h >= 0x59 && h <= 0x61) return keypad19[h - 0x59];
+  switch (h) {
+  case 0x28: return 0x44; // Return
+  case 0x29: return 0x45; // Esc
+  case 0x2a: return 0x41; // Backspace
+  case 0x2b: return 0x42; // Tab
+  case 0x2c: return 0x40; // Space
+  case 0x2d: return 0x0b; // -
+  case 0x2e: return 0x0c; // =
+  case 0x2f: return 0x1a; // [
+  case 0x30: return 0x1b; // ]
+  case 0x31: return 0x0d; // backslash
+  case 0x32: return 0x2b; // (international, by Return)
+  case 0x33: return 0x29; // ;
+  case 0x34: return 0x2a; // '
+  case 0x35: return 0x00; // `
+  case 0x36: return 0x38; // ,
+  case 0x37: return 0x39; // .
+  case 0x38: return 0x3a; // /
+  case 0x44: return 0x5f; // F11: HELP
+  case 0x4c: return 0x46; // Delete
+  case 0x4f: return 0x4e; // right
+  case 0x50: return 0x4f; // left
+  case 0x51: return 0x4d; // down
+  case 0x52: return 0x4c; // up
+  case 0x54: return 0x5c; // keypad /
+  case 0x55: return 0x5d; // keypad *
+  case 0x56: return 0x4a; // keypad -
+  case 0x57: return 0x5e; // keypad +
+  case 0x58: return 0x43; // keypad Enter
+  case 0x62: return 0x0f; // keypad 0
+  case 0x63: return 0x3c; // keypad .
+  case 0x64: return 0x30; // (international, by left Shift)
+  case 0x65: return 0x67; // Menu: right Amiga
+  }
+  return 0xff;
+}
+
+static void amigaKey(uint8_t code, bool down) {
+  if (code >= 0x68 || amigaKeyDown[code] == down) return;
+  amigaKeyDown[code] = down;
+  kbd_key(code, down ? 0 : 1);
+}
+
+static void amigaAllKeysUp() {
+  for (int c = 0; c < 0x68; c++)
+    if (amigaKeyDown[c] && c != 0x62) amigaKey((uint8_t)c, false);
+}
+
+static void usbReport(const uint8_t *r) {
+  bool held[256] = {};
+  for (int k = 2; k < 8; k++)
+    if (r[k] >= 4) held[r[k]] = true;
+  uint32_t nav = 0;
+  if (held[0x52]) nav |= RAW_UP;
+  if (held[0x51]) nav |= RAW_DOWN;
+  if (held[0x50]) nav |= RAW_LEFT;
+  if (held[0x4f]) nav |= RAW_RIGHT;
+  if (held[0x28]) nav |= RAW_CROSS;
+  if (held[0x29]) nav |= RAW_CIRCLE;
+  if (held[0x2c]) nav |= RAW_SQUARE;
+  if (held[0x2b]) nav |= RAW_TRIANGLE;
+  if (held[0x45]) nav |= RAW_OPTIONS;
+  usbNav = nav;
+  if (usbToAmiga) {
+    // Ctrl + Amiga + Amiga: the reset
+    bool ctrl = r[0] & 0x11, lA = r[0] & 0x08, rA = (r[0] & 0x80) || held[0x65];
+    bool wasReset = (usbPrev[0] & 0x11) && (usbPrev[0] & 0x08) && ((usbPrev[0] & 0x80) != 0);
+    if (ctrl && lA && rA && !wasReset) {
+      amigaAllKeysUp();
+      amigaRequestReset();
+      snprintf(status, sizeof(status), "RESET");
+    }
+    // the modifiers: Ctrl, Shift, Alt, Windows (Amiga) - left and right
+    static const uint8_t mods[8] = {0x63, 0x60, 0x64, 0x66, 0x63, 0x61, 0x65, 0x67};
+    bool modDown[0x68] = {};
+    for (int b = 0; b < 8; b++)
+      if (r[0] >> b & 1) modDown[mods[b]] = true;
+    for (int b = 0; b < 8; b++) amigaKey(mods[b], modDown[mods[b]] || (mods[b] == 0x67 && held[0x65]));
+    // Caps Lock: the Amiga's locks (down while on)
+    bool capsNow = held[0x39], capsBefore = false;
+    for (int k = 2; k < 8; k++) capsBefore |= usbPrev[k] == 0x39;
+    if (capsNow && !capsBefore) {
+      capsOn = !capsOn;
+      amigaKey(0x62, capsOn);
+    }
+    // the rest: up for those let go, down for new ones
+    for (int k = 2; k < 8; k++) {
+      uint8_t c = usbPrev[k];
+      if (c >= 4 && !held[c] && c != 0x39 && c != 0x65) amigaKey(hidToAmiga(c), false);
+    }
+    for (int k = 2; k < 8; k++) {
+      uint8_t c = r[k];
+      if (c >= 4 && c != 0x39 && c != 0x45 && c != 0x65) amigaKey(hidToAmiga(c), true);
+    }
+  }
+  memcpy(usbPrev, r, 8);
+}
+
+static void usbKeyboardFrame() {
+  if (!usbToAmiga) amigaAllKeysUp();
+  usbMouseButtons = 0;
+  if (!usbKbWanted) {
+    usbNav = 0;
+    return;
+  }
+  if (!usbKb.isOpen()) {
+    if (usbKb.lost) usbKb.close(false); // (unplugged)
+    usbNav = 0;
+    if (--usbKbScanIn > 0) return;
+    usbKbScanIn = 120;
+    UsbKeyboard::Info i;
+    if (UsbKeyboard::find(i) && usbKb.open(i, true) == 0) {
+      memset(usbPrev, 0, sizeof(usbPrev));
+      snprintf(status, sizeof(status), "%s", usbKb.hasMouse() ? "USB KEYBOARD AND MOUSE" : "USB KEYBOARD");
+    }
+    return;
+  }
+  uint8_t r[8];
+  if (usbKb.poll(r)) usbReport(r);
+  int dx, dy;
+  usbKb.takeMouse(dx, dy);
+  if (usbToAmiga) {
+    // (input.device reads the counters each frame as 8-bit steps: keep each step well inside that)
+    while (dx || dy) {
+      int sx = dx > 40 ? 40 : dx < -40 ? -40 : dx, sy = dy > 40 ? 40 : dy < -40 ? -40 : dy;
+      input_mouse_move(sx, sy);
+      dx -= sx;
+      dy -= sy;
+      if (dx > 200 || dx < -200 || dy > 200 || dy < -200) break;
+    }
+    usbMouseButtons = usbKb.mouseButtons;
+  }
+}
+
 // ============================================================ the menu
-enum ItemKind { IT_RESUME, IT_MOD, IT_RESET, IT_VOLUME, IT_QUIT, IT_HEADER, IT_DISK, IT_NONE };
+enum ItemKind { IT_RESUME, IT_MOD, IT_RESET, IT_VOLUME, IT_USBKBD, IT_QUIT, IT_HEADER, IT_DISK, IT_NONE };
 struct Item {
   ItemKind kind;
   std::string name;
@@ -841,6 +1004,7 @@ static void menuOpenNow() {
   items.push_back({IT_MOD, ""});
   items.push_back({IT_RESET, ""});
   items.push_back({IT_VOLUME, ""});
+  items.push_back({IT_USBKBD, ""});
   items.push_back({IT_QUIT, ""});
   items.push_back({IT_HEADER, ""});
   for (auto &d : disks) items.push_back({IT_DISK, d});
@@ -875,7 +1039,7 @@ static void menuInput() {
   }
   if (menuSel < menuTop) menuTop = menuSel;
   if (menuSel >= menuTop + kMenuRows) menuTop = menuSel - kMenuRows + 1;
-  if (menuSel <= 5) menuTop = 0;
+  if (menuSel <= 6) menuTop = 0;
   if (items[menuSel].kind != IT_QUIT) quitArmed = false;
   Item &it = items[menuSel];
   if (it.kind == IT_VOLUME && (repeating(left) || repeating(right))) {
@@ -890,6 +1054,7 @@ static void menuInput() {
   if (it.kind == IT_QUIT && (pressed & RAW_CROSS)) {
     if (quitArmed) {
       volumePct.store(0);
+      usbKb.close(true); // (the keyboard back to the PS5)
       sceSystemServiceLoadExec("exit", nullptr); // (the app closes)
     }
     quitArmed = true;
@@ -903,6 +1068,11 @@ static void menuInput() {
     return;
   }
   if (pressed & RAW_CROSS) {
+    if (it.kind == IT_USBKBD) {
+      usbKbWanted = !usbKbWanted;
+      if (!usbKbWanted) usbKb.close(true); // the PS5 has it again
+      usbKbScanIn = 0;
+    }
     if (it.kind == IT_RESUME) menuOpen = false;
     if (it.kind == IT_MOD) {
       menuOpen = false;
@@ -938,6 +1108,10 @@ static void drawMenu() {
     case IT_QUIT: snprintf(line, sizeof(line), quitArmed ? "Quit? Press X again" : "Quit to the PS5 home screen"); break;
     case IT_RESET: snprintf(line, sizeof(line), "Reset (Ctrl-Amiga-Amiga)"); break;
     case IT_VOLUME: snprintf(line, sizeof(line), "Volume               %3d%%", volumePct.load()); break;
+    case IT_USBKBD:
+      snprintf(line, sizeof(line), "USB keyboard  %s", !usbKbWanted ? "off (the PS5 has it)" : !usbKb.isOpen() ? "  none found"
+                                                        : usbKb.hasMouse() ? "+ mouse in use" : "      in use");
+      break;
     case IT_HEADER:
       snprintf(line, sizeof(line), "Disks:   X boot from it    [] swap into DF0:");
       col = kWbBlack;
@@ -1083,7 +1257,9 @@ int main() {
   for (int64_t flip = 2;; ++flip) {
     sceVideoOutWaitVblank(video);
     padRead();
-    held = padHeld;
+    usbToAmiga = running && !menuOpen && !modOpen;
+    usbKeyboardFrame();
+    held = padHeld | (usbToAmiga ? (usbNav & RAW_OPTIONS) : usbNav);
     pressed = held & ~prevHeld;
     prevHeld = held;
 
@@ -1106,8 +1282,8 @@ int main() {
         if (pressed & RAW_OPTIONS) menuOpenNow();
         if (pressed & RAW_TRIANGLE) modOpenNow(); // straight to the MOD player
         mouseFrame(true);
-        input_set_lmb((held & (RAW_R1 | RAW_R2 | RAW_SQUARE | RAW_TOUCHPAD)) ? 1 : 0);
-        input_set_rmb((held & (RAW_L1 | RAW_L2 | RAW_CIRCLE)) ? 1 : 0);
+        input_set_lmb(((held & (RAW_R1 | RAW_R2 | RAW_SQUARE | RAW_TOUCHPAD)) || (usbMouseButtons & 1)) ? 1 : 0);
+        input_set_rmb(((held & (RAW_L1 | RAW_L2 | RAW_CIRCLE)) || (usbMouseButtons & 2)) ? 1 : 0);
         // the joystick: the D-pad (the left stick is the mouse)
         input_set_joy((held & RAW_UP) != 0, (held & RAW_DOWN) != 0, (held & RAW_LEFT) != 0, (held & RAW_RIGHT) != 0,
                       (held & RAW_CROSS) != 0);

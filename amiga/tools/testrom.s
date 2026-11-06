@@ -4,7 +4,10 @@
 ; pointer moved by the mouse (JOY0DAT), Paula channel 0 playing a tone,
 ; the left mouse button (background green), the right one (POTGOR: the
 ; stripes go white) and the port 2 joystick (fire: the tone goes up;
-; directions: the stripes' colour).
+; directions: the stripes' colour) and the keyboard (CIA-A's serial port:
+; each key code received is drawn as an 8-line band at the top of the
+; picture, its 8 bits as 8 pixels from the left - bit 7 first, set for a
+; key let go - the next one below, and so on).
 ; Build:  vasmm68k_mot -Fbin -o testrom.rom testrom.s   (256K)
 
 CUSTOM  = $dff000
@@ -94,6 +97,7 @@ start:  lea     CUSTOM,a6
         move.w  #200,d4                 ; pointer x (sprite hstart)
         move.w  #120,d5                 ; pointer y
         move.w  $a(a6),d6               ; last JOY0DAT
+        moveq   #0,d7                   ; key codes received
 frame   move.w  $1e(a6),d0              ; INTREQR
         btst    #5,d0                   ; vertical blank?
         beq.s   frame
@@ -177,7 +181,30 @@ frame   move.w  $1e(a6),d0              ; INTREQR
         bne.s   .nf
         move.w  #127,d0
 .nf     move.w  d0,$a6(a6)
-        bra     frame
+
+        ; keyboard: a byte in on CIA-A's serial port (ICR bit 3)?
+        move.b  $bfed01,d0              ; ICR (reading clears it)
+        btst    #3,d0
+        beq.s   .nk
+        move.b  $bfec01,d0              ; SDR
+        not.b   d0
+        ror.b   #1,d0                   ; the raw key code, bit 7 = up
+        move.w  d7,d1
+        and.w   #31,d1
+        mulu    #320,d1                 ; 8 lines of 40 bytes
+        lea     CHIP_BPL,a0
+        add.l   d1,a0
+        moveq   #7,d2
+.kl     move.b  d0,(a0)
+        clr.b   1(a0)
+        lea     40(a0),a0
+        dbf     d2,.kl
+        addq.w  #1,d7
+        bset    #6,$bfee01              ; the handshake: serial port to output...
+        moveq   #50,d2
+.hs     dbf     d2,.hs
+        bclr    #6,$bfee01              ; ...and back: the keyboard may send the next
+.nk     bra     frame
 
         ; pad to 256K
         dcb.b   $40000-(*-$fc0000),$ff
