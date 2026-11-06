@@ -223,6 +223,22 @@ static void composePicture() {
   }
 }
 
+// With the on-screen keyboard: the picture 1.5 x 3 (960 x 768, the same
+// shape), the keyboard under it
+static const int kSmallX = 480, kSmallY = 8;
+static void composePictureSmall() {
+  static int srcX[960];
+  if (!srcX[959])
+    for (int x = 0; x < 960; x++) srcX[x] = x * 2 / 3;
+  for (int r = 0; r < 256; r++) {
+    const uint16_t *src = picture + r * 2 * 640;
+    uint32_t *out = g_frame + (kSmallY + r * 3) * kW + kSmallX;
+    for (int x = 0; x < 960; x++) out[x] = lut565[src[srcX[x]]];
+    memcpy(out + kW, out, 960 * 4);
+    memcpy(out + 2 * kW, out, 960 * 4);
+  }
+}
+
 // ============================================================ the emulator
 static uint8_t chipRam[0x80000], slowRam[0x80000], kickRom[0x40000];
 static std::atomic<int> emuFps{0};
@@ -347,7 +363,7 @@ static bool padTouch = false;
 static float padTX = 0, padTY = 0, padTW = 1920, padTH = 943;
 
 enum : uint32_t {
-  RAW_OPTIONS = 0x0008, RAW_UP = 0x0010, RAW_RIGHT = 0x0020, RAW_DOWN = 0x0040, RAW_LEFT = 0x0080,
+  RAW_R3 = 0x0004, RAW_OPTIONS = 0x0008, RAW_UP = 0x0010, RAW_RIGHT = 0x0020, RAW_DOWN = 0x0040, RAW_LEFT = 0x0080,
   RAW_L2 = 0x0100, RAW_R2 = 0x0200, RAW_L1 = 0x0400, RAW_R1 = 0x0800, RAW_TRIANGLE = 0x1000,
   RAW_CIRCLE = 0x2000, RAW_CROSS = 0x4000, RAW_SQUARE = 0x8000, RAW_TOUCHPAD = 0x00100000,
   RAW_INTERCEPTED = 0x80000000u,
@@ -425,12 +441,13 @@ static bool repeating(uint32_t bits) {
 static bool prevTouch = false;
 static float prevTX = 0, prevTY = 0, mouseAccX = 0, mouseAccY = 0;
 
+static bool touchIsMouse = true; // (false: the on-screen keyboard has the touchpad)
 static void mouseFrame(bool active) {
   float dx = 0, dy = 0;
   // the touchpad, like a laptop's: its width is about 500 mouse steps (one
   // and a half times across a low-resolution screen); it is about half as
   // tall as it is wide, so up and down is half that
-  if (active && padTouch && prevTouch) {
+  if (active && touchIsMouse && padTouch && prevTouch) {
     dx += (padTX - prevTX) * 500.0f;
     dy += (padTY - prevTY) * 250.0f;
   }
@@ -986,8 +1003,211 @@ static void usbKeyboardFrame() {
   }
 }
 
+// ============================================================ the on-screen keyboard
+// An Amiga 500 keyboard (US), drawn: R3 (click the right stick) shows it under
+// a smaller picture. The D-pad chooses a key (red frame), Cross presses it (held
+// as long as Cross is), the touchpad points at keys and its click presses one.
+// Square is SPACE, Circle RETURN. Shift, Ctrl, Alt and the Amiga keys chosen
+// with Cross hold for the next key (blue); Caps Lock locks. The left stick and
+// R1 R2 / L1 L2 stay the mouse.
+struct OsKey {
+  const char *label;
+  uint8_t code;
+  float x, y, w, h; // in key units
+};
+static const OsKey osKeys[] = {
+    {"Esc", 0x45, 0, 0, 1.25f, 0.8f},
+    {"F1", 0x50, 1.75f, 0, 1.25f, 0.8f}, {"F2", 0x51, 3.0f, 0, 1.25f, 0.8f}, {"F3", 0x52, 4.25f, 0, 1.25f, 0.8f},
+    {"F4", 0x53, 5.5f, 0, 1.25f, 0.8f}, {"F5", 0x54, 6.75f, 0, 1.25f, 0.8f}, {"F6", 0x55, 8.25f, 0, 1.25f, 0.8f},
+    {"F7", 0x56, 9.5f, 0, 1.25f, 0.8f}, {"F8", 0x57, 10.75f, 0, 1.25f, 0.8f}, {"F9", 0x58, 12.0f, 0, 1.25f, 0.8f},
+    {"F10", 0x59, 13.25f, 0, 1.25f, 0.8f},
+    {"Del", 0x46, 15.5f, 0, 1.5f, 0.8f}, {"Help", 0x5f, 17.0f, 0, 1.5f, 0.8f},
+    // row 1
+    {"`", 0x00, 0, 1, 1, 1}, {"1", 0x01, 1, 1, 1, 1}, {"2", 0x02, 2, 1, 1, 1}, {"3", 0x03, 3, 1, 1, 1},
+    {"4", 0x04, 4, 1, 1, 1}, {"5", 0x05, 5, 1, 1, 1}, {"6", 0x06, 6, 1, 1, 1}, {"7", 0x07, 7, 1, 1, 1},
+    {"8", 0x08, 8, 1, 1, 1}, {"9", 0x09, 9, 1, 1, 1}, {"0", 0x0a, 10, 1, 1, 1}, {"-", 0x0b, 11, 1, 1, 1},
+    {"=", 0x0c, 12, 1, 1, 1}, {"\\", 0x0d, 13, 1, 1, 1}, {"Bksp", 0x41, 14, 1, 1, 1},
+    // row 2
+    {"Tab", 0x42, 0, 2, 1.5f, 1}, {"Q", 0x10, 1.5f, 2, 1, 1}, {"W", 0x11, 2.5f, 2, 1, 1}, {"E", 0x12, 3.5f, 2, 1, 1},
+    {"R", 0x13, 4.5f, 2, 1, 1}, {"T", 0x14, 5.5f, 2, 1, 1}, {"Y", 0x15, 6.5f, 2, 1, 1}, {"U", 0x16, 7.5f, 2, 1, 1},
+    {"I", 0x17, 8.5f, 2, 1, 1}, {"O", 0x18, 9.5f, 2, 1, 1}, {"P", 0x19, 10.5f, 2, 1, 1}, {"[", 0x1a, 11.5f, 2, 1, 1},
+    {"]", 0x1b, 12.5f, 2, 1, 1}, {"Return", 0x44, 13.5f, 2, 1.5f, 2},
+    // row 3
+    {"Ctrl", 0x63, 0, 3, 1.25f, 1}, {"Caps", 0x62, 1.25f, 3, 1.25f, 1}, {"A", 0x20, 2.5f, 3, 1, 1},
+    {"S", 0x21, 3.5f, 3, 1, 1}, {"D", 0x22, 4.5f, 3, 1, 1}, {"F", 0x23, 5.5f, 3, 1, 1}, {"G", 0x24, 6.5f, 3, 1, 1},
+    {"H", 0x25, 7.5f, 3, 1, 1}, {"J", 0x26, 8.5f, 3, 1, 1}, {"K", 0x27, 9.5f, 3, 1, 1}, {"L", 0x28, 10.5f, 3, 1, 1},
+    {";", 0x29, 11.5f, 3, 1, 1}, {"'", 0x2a, 12.5f, 3, 1, 1},
+    // row 4
+    {"Shift", 0x60, 0, 4, 2.25f, 1}, {"Z", 0x31, 2.25f, 4, 1, 1}, {"X", 0x32, 3.25f, 4, 1, 1},
+    {"C", 0x33, 4.25f, 4, 1, 1}, {"V", 0x34, 5.25f, 4, 1, 1}, {"B", 0x35, 6.25f, 4, 1, 1}, {"N", 0x36, 7.25f, 4, 1, 1},
+    {"M", 0x37, 8.25f, 4, 1, 1}, {",", 0x38, 9.25f, 4, 1, 1}, {".", 0x39, 10.25f, 4, 1, 1}, {"/", 0x3a, 11.25f, 4, 1, 1},
+    {"Shift", 0x61, 12.25f, 4, 2.75f, 1},
+    // row 5
+    {"Alt", 0x64, 0.75f, 5, 1.5f, 1}, {"A", 0x66, 2.25f, 5, 1.25f, 1}, {"", 0x40, 3.5f, 5, 8, 1},
+    {"A", 0x67, 11.5f, 5, 1.25f, 1}, {"Alt", 0x65, 12.75f, 5, 1.5f, 1},
+    // the cursor keys
+    {"", 0x4c, 16.25f, 4, 1, 1}, {"", 0x4f, 15.25f, 5, 1, 1}, {"", 0x4d, 16.25f, 5, 1, 1},
+    {"", 0x4e, 17.25f, 5, 1, 1},
+    // the keypad
+    {"(", 0x5a, 19, 1, 1, 1}, {")", 0x5b, 20, 1, 1, 1}, {"/", 0x5c, 21, 1, 1, 1}, {"*", 0x5d, 22, 1, 1, 1},
+    {"7", 0x3d, 19, 2, 1, 1}, {"8", 0x3e, 20, 2, 1, 1}, {"9", 0x3f, 21, 2, 1, 1}, {"-", 0x4a, 22, 2, 1, 1},
+    {"4", 0x2d, 19, 3, 1, 1}, {"5", 0x2e, 20, 3, 1, 1}, {"6", 0x2f, 21, 3, 1, 1}, {"+", 0x5e, 22, 3, 1, 1},
+    {"1", 0x1d, 19, 4, 1, 1}, {"2", 0x1e, 20, 4, 1, 1}, {"3", 0x1f, 21, 4, 1, 1}, {"Ent", 0x43, 22, 4, 1, 2},
+    {"0", 0x0f, 19, 5, 2, 1}, {".", 0x3c, 21, 5, 1, 1},
+};
+static const int kOsKeys = (int)(sizeof(osKeys) / sizeof(osKeys[0]));
+static const int kOsUnit = 54, kOsRowH = 46;
+static const int kOsX = kPicX + (1280 - 23 * kOsUnit) / 2, kOsY = 790;
+
+static bool oskOpen = false;
+static int oskSel = 29;           // the chosen key (Q to start with)
+static int oskDown = -1;          // the key Cross (or a touchpad click) holds down
+static uint8_t oskSticky = 0;     // modifiers held for the next key: 1 shift, 2 ctrl, 4 alt, 8 amiga (left), 16 amiga (right)
+static bool oskCaps = false;
+static int oskTouch = -1;         // the key under the finger
+
+static void oskRect(const OsKey &k, int &x, int &y, int &w, int &h) {
+  x = kOsX + (int)(k.x * kOsUnit) + 2;
+  y = kOsY + (int)(k.y * kOsRowH) + 2;
+  w = (int)(k.w * kOsUnit) - 4;
+  h = (int)(k.h * kOsRowH) - 4;
+}
+
+static int oskModBit(uint8_t code) {
+  switch (code) {
+  case 0x60: case 0x61: return 1;
+  case 0x63: return 2;
+  case 0x64: case 0x65: return 4;
+  case 0x66: return 8;
+  case 0x67: return 16;
+  }
+  return 0;
+}
+static uint8_t oskModCode(int bit) { return bit == 1 ? 0x60 : bit == 2 ? 0x63 : bit == 4 ? 0x64 : bit == 8 ? 0x66 : 0x67; }
+
+static void oskSetSticky(uint8_t now) {
+  for (int b = 1; b <= 16; b <<= 1)
+    if ((now ^ oskSticky) & b) amigaKey(oskModCode(b), (now & b) != 0);
+  oskSticky = now;
+}
+
+static void oskPress(int i) {
+  const OsKey &k = osKeys[i];
+  if (k.code == 0x62) { // Caps Lock: locks
+    oskCaps = !oskCaps;
+    amigaKey(0x62, oskCaps);
+    return;
+  }
+  if (int b = oskModBit(k.code)) {
+    oskSetSticky(oskSticky ^ (uint8_t)b);
+    return;
+  }
+  amigaKey(k.code, true);
+  oskDown = i;
+}
+static void oskRelease() {
+  if (oskDown < 0) return;
+  amigaKey(osKeys[oskDown].code, false);
+  oskDown = -1;
+  oskSetSticky(0); // (the modifiers were for this key)
+}
+
+// the nearest key in a direction from the chosen one
+static int oskMove(int dx, int dy) {
+  const OsKey &c = osKeys[oskSel];
+  float cx = c.x + c.w / 2, cy = c.y + (dy ? c.h / 2 : 0.5f);
+  int best = oskSel;
+  float bestCost = 1e9f;
+  for (int i = 0; i < kOsKeys; i++) {
+    if (i == oskSel) continue;
+    const OsKey &k = osKeys[i];
+    float kx = k.x + k.w / 2, ky = k.y + k.h / 2;
+    float ax = (kx - cx) * dx + (ky - cy) * dy; // along the direction
+    if (ax <= 0.1f) continue;
+    float side = dx ? (cy >= k.y && cy < k.y + k.h ? 0 : (ky - cy < 0 ? cy - ky : ky - cy))
+                    : (cx >= k.x && cx < k.x + k.w ? 0 : (kx - cx < 0 ? cx - kx : kx - cx));
+    float cost = ax + side * 4;
+    if (cost < bestCost) bestCost = cost, best = i;
+  }
+  return best;
+}
+
+static int oskKeyAt(float ux, float uy) {
+  for (int i = 0; i < kOsKeys; i++) {
+    const OsKey &k = osKeys[i];
+    if (ux >= k.x && ux < k.x + k.w && uy >= k.y && uy < k.y + k.h) return i;
+  }
+  return -1;
+}
+
+static void oskOpenNow(bool open) {
+  if (!open) {
+    oskRelease();
+    oskSetSticky(0);
+  }
+  oskOpen = open;
+  drawSides();
+}
+
+// once a frame while it shows (the Amiga screen, no menu)
+static void oskInput() {
+  if (repeating(RAW_LEFT)) oskSel = oskMove(-1, 0);
+  if (repeating(RAW_RIGHT)) oskSel = oskMove(1, 0);
+  if (repeating(RAW_UP)) oskSel = oskMove(0, -1);
+  if (repeating(RAW_DOWN)) oskSel = oskMove(0, 1);
+  // the touchpad: the keyboard, the whole pad
+  oskTouch = -1;
+  if (padTouch) oskTouch = oskKeyAt(padTX * 23.0f, padTY * 6.0f);
+  if (oskDown < 0) {
+    if (pressed & RAW_CROSS) oskPress(oskSel);
+    else if ((pressed & RAW_TOUCHPAD) && oskTouch >= 0) oskPress(oskSel = oskTouch);
+    else if (pressed & RAW_SQUARE) oskPress(oskSel = oskKeyAt(7.5f, 5.5f));
+    else if (pressed & RAW_CIRCLE) oskPress(oskSel = oskKeyAt(14.0f, 2.5f));
+  } else if (!(held & (RAW_CROSS | RAW_TOUCHPAD | RAW_SQUARE | RAW_CIRCLE))) {
+    oskRelease();
+  }
+}
+
+static void drawOsk() {
+  const uint32_t body = rgb(0xc8, 0xc0, 0xa8), key = rgb(0xf0, 0xea, 0xd8), dark = rgb(0x9c, 0x96, 0x88),
+                 label = rgb(0x30, 0x30, 0x38), blue = rgb(0x40, 0x80, 0xe0), red = rgb(0xff, 0x10, 0x10),
+                 orange = rgb(0xff, 0x88, 0x00);
+  fillRect(kOsX - 12, kOsY - 10, 23 * kOsUnit + 24, 6 * kOsRowH + 18, body);
+  for (int i = 0; i < kOsKeys; i++) {
+    const OsKey &k = osKeys[i];
+    int x, y, w, h;
+    oskRect(k, x, y, w, h);
+    bool fn = k.y == 0 || k.code >= 0x60 || k.code == 0x41 || k.code == 0x42 || k.code == 0x44 || k.code == 0x43;
+    uint32_t c = fn ? dark : key;
+    int mb = oskModBit(k.code);
+    if ((mb && (oskSticky & mb)) || (k.code == 0x62 && oskCaps) || i == oskDown) c = blue;
+    fillRect(x, y, w, h, c);
+    fillRect(x, y + h - 4, w, 4, rgb(0x70, 0x6c, 0x60)); // (a shadow)
+    if (k.code == 0x66 || k.code == 0x67) { // the Amiga keys: an "A", filled for the right one
+      int s = 2;
+      uint32_t ac = k.code == 0x67 ? label : rgb(0xff, 0xff, 0xff);
+      if (k.code == 0x66) fillRect(x + w / 2 - 14, y + 6, 28, h - 14, label);
+      text(x + w / 2 - 8, y + (h - 32) / 2, "A", s, ac);
+    } else if (k.code >= 0x4c && k.code <= 0x4f) { // the cursor keys: an arrow
+      int cx = x + w / 2, cy = y + (h - 4) / 2;
+      for (int t = 0; t < 10; t++) {
+        if (k.code == 0x4c) fillRect(cx - t, cy - 6 + t, 2 * t + 1, 1, label);  // up
+        if (k.code == 0x4d) fillRect(cx - t, cy + 6 - t, 2 * t + 1, 1, label);  // down
+        if (k.code == 0x4f) fillRect(cx - 6 + t, cy - t, 1, 2 * t + 1, label);  // left
+        if (k.code == 0x4e) fillRect(cx + 6 - t, cy - t, 1, 2 * t + 1, label);  // right
+      }
+    } else if (k.label[0]) {
+      int s = strlen(k.label) == 1 ? 2 : 1;
+      int tw = textWidth(k.label, s), th = 16 * s;
+      text(x + (w - tw) / 2, y + (h - 4 - th) / 2, k.label, s, label);
+    }
+    if (i == oskTouch) frameRect(x - 2, y - 2, w + 4, h + 4, 3, orange);
+    if (i == oskSel) frameRect(x - 3, y - 3, w + 6, h + 6, 4, red);
+  }
+}
+
 // ============================================================ the menu
-enum ItemKind { IT_RESUME, IT_MOD, IT_RESET, IT_VOLUME, IT_USBKBD, IT_QUIT, IT_HEADER, IT_DISK, IT_NONE };
+enum ItemKind { IT_RESUME, IT_MOD, IT_OSK, IT_RESET, IT_VOLUME, IT_USBKBD, IT_QUIT, IT_HEADER, IT_DISK, IT_NONE };
 struct Item {
   ItemKind kind;
   std::string name;
@@ -1002,6 +1222,7 @@ static void menuOpenNow() {
   items.clear();
   items.push_back({IT_RESUME, ""});
   items.push_back({IT_MOD, ""});
+  items.push_back({IT_OSK, ""});
   items.push_back({IT_RESET, ""});
   items.push_back({IT_VOLUME, ""});
   items.push_back({IT_USBKBD, ""});
@@ -1039,7 +1260,7 @@ static void menuInput() {
   }
   if (menuSel < menuTop) menuTop = menuSel;
   if (menuSel >= menuTop + kMenuRows) menuTop = menuSel - kMenuRows + 1;
-  if (menuSel <= 6) menuTop = 0;
+  if (menuSel <= 7) menuTop = 0;
   if (items[menuSel].kind != IT_QUIT) quitArmed = false;
   Item &it = items[menuSel];
   if (it.kind == IT_VOLUME && (repeating(left) || repeating(right))) {
@@ -1074,6 +1295,10 @@ static void menuInput() {
       usbKbScanIn = 0;
     }
     if (it.kind == IT_RESUME) menuOpen = false;
+    if (it.kind == IT_OSK) {
+      menuOpen = false;
+      oskOpenNow(!oskOpen);
+    }
     if (it.kind == IT_MOD) {
       menuOpen = false;
       modOpenNow();
@@ -1105,6 +1330,7 @@ static void drawMenu() {
     switch (it.kind) {
     case IT_RESUME: snprintf(line, sizeof(line), "Back to the Amiga"); break;
     case IT_MOD: snprintf(line, sizeof(line), "MOD player"); break;
+    case IT_OSK: snprintf(line, sizeof(line), oskOpen ? "Hide the keyboard (R3)" : "On-screen keyboard (R3)"); break;
     case IT_QUIT: snprintf(line, sizeof(line), quitArmed ? "Quit? Press X again" : "Quit to the PS5 home screen"); break;
     case IT_RESET: snprintf(line, sizeof(line), "Reset (Ctrl-Amiga-Amiga)"); break;
     case IT_VOLUME: snprintf(line, sizeof(line), "Volume               %3d%%", volumePct.load()); break;
@@ -1146,6 +1372,31 @@ static void sideRow(int x, int y, Icon ic, const char *btn, const char *what) {
 
 static void drawSides() {
   fillRect(0, 0, kW, kH, kSideBg);
+  if (oskOpen) {
+    // the keyboard's help: left the keys, right the mouse and the rest
+    text(28, 40, "AMIGA", 4, kWbOrange);
+    text(28, 110, "500", 4, kWbWhite);
+    int x = 8, y = 300, step = 50;
+    text(x + 20, y, "KEYBOARD", 2, kWbOrange);
+    sideRow(x, y += step, ICON_CROSS, "D-PAD", "CHOOSE");
+    sideRow(x, y += step, ICON_CROSS, nullptr, "PRESS");
+    sideRow(x, y += step, ICON_SQUARE, nullptr, "SPACE");
+    sideRow(x, y += step, ICON_CIRCLE, nullptr, "RETURN");
+    sideRow(x, y += step, ICON_CROSS, "PAD", "POINT,");
+    text(x + 84, y += 34, "CLICK", 2, kText);
+    int rx = 1600 + 8;
+    y = 300;
+    text(rx + 20, y, "MOUSE", 2, kWbOrange);
+    y += step;
+    text(rx + 20, y, "LEFT STICK", 2, kText);
+    sideRow(rx, y += step, ICON_CROSS, "R1 R2", "LEFT");
+    sideRow(rx, y += step, ICON_CROSS, "L1 L2", "RIGHT");
+    y += step;
+    sideRow(rx, y += step, ICON_CROSS, "R3", "HIDE KEYS");
+    sideRow(rx, y += step, ICON_CROSS, "OPT", "MENU");
+    fullCopies = 2;
+    return;
+  }
   // left: the name and the mouse; right: the joystick and the rest
   text(28, 40, "AMIGA", 4, kWbOrange);
   text(28, 110, "500", 4, kWbWhite);
@@ -1177,6 +1428,7 @@ static void drawSides() {
   text(rx + 84, y += 20, "DISKS", 2, kDim);
   text(rx + 84, y += 30, "RESET, QUIT", 2, kDim);
   sideRow(rx, y += step, ICON_TRIANGLE, nullptr, "MOD PLAYER");
+  sideRow(rx, y += step, ICON_CROSS, "R3", "KEYBOARD");
   fullCopies = 2;
 }
 
@@ -1281,14 +1533,33 @@ int main() {
       } else {
         if (pressed & RAW_OPTIONS) menuOpenNow();
         if (pressed & RAW_TRIANGLE) modOpenNow(); // straight to the MOD player
+        if (pressed & RAW_R3) oskOpenNow(!oskOpen);
+        touchIsMouse = !oskOpen;
         mouseFrame(true);
-        input_set_lmb(((held & (RAW_R1 | RAW_R2 | RAW_SQUARE | RAW_TOUCHPAD)) || (usbMouseButtons & 1)) ? 1 : 0);
-        input_set_rmb(((held & (RAW_L1 | RAW_L2 | RAW_CIRCLE)) || (usbMouseButtons & 2)) ? 1 : 0);
-        // the joystick: the D-pad (the left stick is the mouse)
-        input_set_joy((held & RAW_UP) != 0, (held & RAW_DOWN) != 0, (held & RAW_LEFT) != 0, (held & RAW_RIGHT) != 0,
-                      (held & RAW_CROSS) != 0);
+        if (oskOpen) {
+          // the keyboard has the D-pad, Cross, Square, Circle and the touchpad
+          oskInput();
+          input_set_lmb(((held & (RAW_R1 | RAW_R2)) || (usbMouseButtons & 1)) ? 1 : 0);
+          input_set_rmb(((held & (RAW_L1 | RAW_L2)) || (usbMouseButtons & 2)) ? 1 : 0);
+          input_set_joy(0, 0, 0, 0, 0);
+        } else {
+          input_set_lmb(((held & (RAW_R1 | RAW_R2 | RAW_SQUARE | RAW_TOUCHPAD)) || (usbMouseButtons & 1)) ? 1 : 0);
+          input_set_rmb(((held & (RAW_L1 | RAW_L2 | RAW_CIRCLE)) || (usbMouseButtons & 2)) ? 1 : 0);
+          // the joystick: the D-pad (the left stick is the mouse)
+          input_set_joy((held & RAW_UP) != 0, (held & RAW_DOWN) != 0, (held & RAW_LEFT) != 0, (held & RAW_RIGHT) != 0,
+                        (held & RAW_CROSS) != 0);
+        }
       }
-      composePicture();
+      if (!usbToAmiga || menuOpen) {
+        oskDown = -1; // (every key went up for the menu or the MOD player)
+        oskSticky = 0;
+      }
+      if (oskOpen) {
+        composePictureSmall();
+        drawOsk();
+      } else {
+        composePicture();
+      }
       if (menuOpen) drawMenu();
       drawStatus();
     } else {

@@ -73,7 +73,7 @@ C= then SHIFT switches upper / lower case. SHIFT LOCK stays on until pressed aga
 RESTORE works too.
 
 **Menu** (Options): BACK TO THE C64, SID MUSIC PLAYER, RESET C64, the joystick port, the volume,
-USB KEYBOARD (on / off), USB KEYBOARD TEST (below), QUIT TO THE PS5 HOME SCREEN (Cross twice), then the programs and disks. It opens on the program chosen last (or the first one). Choosing one restarts the C64
+USB KEYBOARD (on / off), QUIT TO THE PS5 HOME SCREEN (Cross twice), then the programs and disks. It opens on the program chosen last (or the first one). Choosing one restarts the C64
 and starts it:
 
 - a `.prg`: loaded straight into memory and RUN (as the board's AUTOSTART does)
@@ -81,31 +81,6 @@ and starts it:
 
 The C64 keeps running behind the menu. D-pad up / down, Cross chooses, left / right change the
 port and the volume, Circle or Options go back.
-
-## USB keyboard test (experimental)
-
-**USB KEYBOARD TEST** in the menu finds out whether a USB keyboard plugged into the PS5 reaches the
-app. First, straight from USB (`common/UsbKeyboard.h`, after
-[PS5-KBM-Bridge](https://github.com/coru182/PS5-KBM-Bridge), GPL-3.0): it finds a boot-protocol
-keyboard among `/dev/ugen*`, takes it from the PS5 while the screen is open and shows its 8-byte
-reports with the keys named; Circle gives it back to the PS5. Without one, the test tries Sony's
-keyboard library: It loads Sony's keyboard library (`libSceKeyboard`) while the app runs, opens the keyboard
-and shows, each frame, the raw bytes it returns: red where a byte has just changed, and below, the
-latest changes (`offset=value`, unlike the keyboard left alone). Leave the keyboard alone for the
-first second (that's how it tells a clock in the bytes from a key), then press keys one at a time.
-Circle goes back.
-
-Every step also goes into `kbdtest.txt` (in `/data/homebrew/PPSA99904`, else `/download0`; the
-screen says which, or that neither could be written), written before each call: if the test closes
-the app, the file's last line says which call did it. The code is `src/ps5/KeyboardProbe.*`; the
-simulator has a made-up keyboard (`SIM_KEY="300-320:04"` holds key code 04 in byte 8 for those
-frames, `SIM_NOKBD=1` makes the library fail to load).
-
-The test first checks that the app can load libraries this way at all (the controller's and the
-sound's, which it already uses), then whether the keyboard library's file can be seen. A second
-build, `KBD_DIRECT=1 c64/build.sh` (`build/c64kbd/PPSA99906`, "C64 Keyboard Test", beside the C64),
-also imports the keyboard library the usual way, as the app does the controller's: if the PS5
-can't give the library to a homebrew app, that build doesn't start at all.
 
 ## SID music player
 

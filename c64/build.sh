@@ -5,10 +5,6 @@
 #
 #   c64/build.sh                    -> build/c64/PPSA99904/ and PPSA99904.zip
 #   c64/build.sh deploy <PS5 IP>    -> also copies it to /data/homebrew over FTP
-#   KBD_DIRECT=1 c64/build.sh       -> build/c64kbd/PPSA99906: a test build that
-#                                      also imports the USB keyboard library the
-#                                      usual way (if the PS5 can't give it to
-#                                      the app, that build won't start)
 #
 # Where the starter is: PS5_STARTER=/path/to/ps5-homebrew-starter, or a
 # ps5-homebrew-starter folder next to this repository, or ~/ps5-homebrew-starter.
@@ -103,27 +99,11 @@ if [[ -d $here/assets/c64/music ]]; then
     find "$kit/c64/assets/c64/music" -name 'Songlengths.md5' -delete   # (only the PC tool needs it)
 fi
 out_name=c64
-defs=
-if [[ ${KBD_DIRECT:-0} == 1 ]]; then
-    out_name=c64kbd
-    defs=KBD_DIRECT
-    python3 - "$kit/c64/sce_sys/param.json" <<'PY'
-import json, sys
-p = sys.argv[1]
-j = json.load(open(p))
-j["titleId"] = "PPSA99906"
-j["conceptId"] = "99906"
-j["contentId"] = "UP9000-PPSA99906_00-C64KBDTESTPS5001"
-j["localizedParameters"]["en-US"]["titleName"] = "C64 Keyboard Test"
-json.dump(j, open(p, "w"), indent=2)
-PY
-fi
 bash "$kit/tools/validate-assets.sh" "$kit/c64/sce_sys"
 
 # 3. Build. The kit compiles every .c/.cpp under c64/src.
 vars=(APP_SOURCE_DIR=c64/src APP_PARAM=c64/sce_sys/param.json
       APP_SCE_SYS=c64/sce_sys APP_ASSETS=c64/assets)
-[[ -z $defs ]] || vars+=(APP_DEFINITIONS="$defs")
 if [[ -n $deploy_host ]]; then
     make -C "$kit" "${vars[@]}" deploy PS5_HOST="$deploy_host"
 else

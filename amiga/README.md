@@ -47,7 +47,14 @@ The picture is the Amiga's 640 x 256 at 2 x 4 (1280 x 1024), the full height of 
 | D-pad | joystick in port 2 |
 | Cross | fire |
 | Triangle | the MOD player, straight away |
+| R3 (click the right stick) | the on-screen keyboard |
 | Options | the menu |
+
+**On-screen keyboard** (R3, or the menu): an Amiga 500 keyboard (US) under a smaller picture (960 x 768,
+the same shape). The D-pad chooses a key (red frame) and Cross presses it, held as long as Cross is;
+the touchpad is the keyboard (point at a key, orange; click to press it); Square is SPACE, Circle
+RETURN. Shift, Ctrl, Alt and the Amiga keys chosen with Cross hold for the next key (blue); Caps Lock
+locks. The left stick is still the mouse, with R1 / R2 (left button) and L1 / L2 (right). R3 hides it.
 
 **A USB keyboard** plugged into the PS5 is the Amiga's keyboard, and the mouse of a wireless set on
 the same receiver is the Amiga's mouse too (with the stick and the touchpad). The app takes them

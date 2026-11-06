@@ -35,12 +35,6 @@ int scePadInit();
 int scePadOpen(int32_t user_id, int32_t type, int32_t index, const void *param);
 int scePadGetHandle(int32_t user_id, int32_t type, int32_t index);
 int scePadRead(int32_t handle, void *data, int32_t count);
-// loading a system library at run time (the USB keyboard test)
-int sceKernelLoadStartModule(const char *path, size_t argc, const void *argv, uint32_t flags, void *option,
-                             int *result);
-int sceKernelDlsym(int handle, const char *symbol, void **address);
-// the system module loader, by a library's name (then 0s and a result)
-int sceSysmoduleLoadModuleByNameInternal(const char *name, uint32_t flags, uint64_t a, uint64_t b, int *result);
 int sceAudioOutInit();
 int sceAudioOutOpen(int user, int type, int index, unsigned grain, unsigned rate, unsigned format);
 int sceAudioOutOutput(int handle, const void *samples);
