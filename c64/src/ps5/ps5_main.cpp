@@ -55,7 +55,7 @@ static const uint32_t kSideBg = rgb(0x14, 0x12, 0x1c);
 static const uint32_t kText = rgb(0xe0, 0xe0, 0xe8);
 static const uint32_t kDim = rgb(0x8a, 0x88, 0x98);
 static const uint32_t kTitle = rgb(0x8c, 0x7e, 0xe6);   // C64 light blue, brighter
-static const uint32_t kSelect = rgb(0xff, 0xe0, 0x40);  // the keyboard's chosen key
+static const uint32_t kSelect = rgb(0xff, 0x10, 0x10);  // the keyboard's chosen key (red: stands out from the keys)
 static const uint32_t kIconCross = rgb(0x7c, 0xb2, 0xe8), kIconCircle = rgb(0xff, 0x66, 0x6e),
                       kIconSquare = rgb(0xe0, 0x8c, 0xd2), kIconTriangle = rgb(0x40, 0xe0, 0xb0);
 
@@ -413,6 +413,8 @@ static void sendKey(uint32_t held) {
 }
 
 static void drawKeyboard() {
+  // the chosen key's frame reaches 2 pixels past the picture at its edges: clear that margin
+  fillRect(kKbX - 2, kKbY - 2, kKbW + 4, kKbH + 4, kSideBg);
   for (int y = 0; y < kKbH; y++) memcpy(g_frame + (kKbY + y) * kW + kKbX, kbImage[0] + y * kKbW, kKbW * 4);
   for (int k = 0; k < P4KB_KEY_COUNT; k++) {
     int look = 0, m;

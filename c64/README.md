@@ -40,7 +40,7 @@ repository. Then put it on the home screen with ShadowMountPlus, as with Hello P
 
 | DualSense | |
 | --- | --- |
-| D-pad or left stick | choose a key (yellow frame) |
+| D-pad or left stick | choose a key (red frame) |
 | Touchpad | is the keyboard: point at a key; click to press it |
 | Cross | press the chosen key (held as long as Cross is) |
 | Square / Circle / R1 | SPACE / INST-DEL / RETURN |
