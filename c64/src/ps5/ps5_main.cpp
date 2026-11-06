@@ -1239,8 +1239,12 @@ static void drawKbdTest() {
   for (int i = 0; i < S.stepCount; i++, y += 18) text(64, y, S.steps[i], 2, light);
   y = 160 + KeyboardProbe::kLines * 18 + 10;
   if (S.opened) {
-    snprintf(line, sizeof(line), "READ %ld   READSTATE: %08X (%d BYTES)   READ: %08X (%d BYTES)", S.reads, (unsigned)S.readStateRet,
-             S.writtenState, (unsigned)S.readRet, S.writtenRead);
+    if (KeyboardProbe::readingUsb())
+      snprintf(line, sizeof(line), "USB: %d TRANSFERS, %d REPORTS, LAST %d BYTES, LAST ERROR %d", S.readStateRet, S.writtenState,
+               S.writtenRead, S.readRet);
+    else
+      snprintf(line, sizeof(line), "READ %ld   READSTATE: %08X (%d BYTES)   READ: %08X (%d BYTES)", S.reads, (unsigned)S.readStateRet,
+               S.writtenState, (unsigned)S.readRet, S.writtenRead);
     text(64, y, line, 2, white);
     y += 34;
     for (int row = 0; row < KeyboardProbe::kStateBytes / 16; row++, y += 26) {
@@ -1254,7 +1258,8 @@ static void drawKbdTest() {
       }
     }
     y += 16;
-    text(64, y, S.reads < 60 ? "LATEST CHANGES: (WAITING: LEAVE THE KEYBOARD ALONE)" : "LATEST CHANGES (READ: OFFSET=VALUE):", 2, white);
+    text(64, y, KeyboardProbe::readingUsb() ? "THE KEYBOARD'S LATEST REPORTS (MODIFIERS, 0, SIX KEYS):"
+                : S.reads < 60 ? "LATEST CHANGES: (WAITING: LEAVE THE KEYBOARD ALONE)" : "LATEST CHANGES (READ: OFFSET=VALUE):", 2, white);
     y += 28;
     for (int i = 0; i < S.changeCount; i++, y += 24) text(64, y, S.changes[i], 2, i == 0 ? yellow : light);
   }
@@ -1272,6 +1277,7 @@ static void frameInput() {
     g_c64Joy[1].store(0xff);
     KeyboardProbe::frame();
     if (pressed & (RAW_CIRCLE | RAW_OPTIONS)) {
+      KeyboardProbe::stop(); // (the keyboard back to the PS5)
       kbdTestOpen = false;
       drawSides();
     }

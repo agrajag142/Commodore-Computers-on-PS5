@@ -64,7 +64,11 @@ port and the volume, Circle or Options go back.
 ## USB keyboard test (experimental)
 
 **USB KEYBOARD TEST** in the menu finds out whether a USB keyboard plugged into the PS5 reaches the
-app. It loads Sony's keyboard library (`libSceKeyboard`) while the app runs, opens the keyboard
+app. First, straight from USB (`common/UsbKeyboard.h`, after
+[PS5-KBM-Bridge](https://github.com/coru182/PS5-KBM-Bridge), GPL-3.0): it finds a boot-protocol
+keyboard among `/dev/ugen*`, takes it from the PS5 while the screen is open and shows its 8-byte
+reports with the keys named; Circle gives it back to the PS5. Without one, the test tries Sony's
+keyboard library: It loads Sony's keyboard library (`libSceKeyboard`) while the app runs, opens the keyboard
 and shows, each frame, the raw bytes it returns: red where a byte has just changed, and below, the
 latest changes (`offset=value`, unlike the keyboard left alone). Leave the keyboard alone for the
 first second (that's how it tells a clock in the bytes from a key), then press keys one at a time.

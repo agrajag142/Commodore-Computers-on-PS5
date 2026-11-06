@@ -1,6 +1,7 @@
 // KeyboardProbe.cpp - see KeyboardProbe.h
 
 #include "KeyboardProbe.h"
+#include "UsbKeyboard.h"
 #include "ps5_sce.h"
 
 #include <errno.h>
@@ -34,7 +35,8 @@ typedef int (*FnReadState)(int32_t handle, void *data);
 typedef int (*FnRead)(int32_t handle, void *data, int32_t count);
 
 static State S;
-static bool started = false;
+static UsbKeyboard usb;
+static bool usbMode = false; // reading the keyboard straight from USB
 static FILE *logFile = nullptr;
 static int logLines = 0;
 static FnReadState readState = nullptr;
@@ -75,8 +77,16 @@ static int written(const uint8_t *b) {
 }
 
 void start(int32_t initialUser) {
-  if (started) return;
-  started = true;
+  stop();
+  usbMode = false;
+  haveIdle = false;
+  memset(noisy, 0, sizeof(noisy));
+  memset(prev, 0, sizeof(prev));
+  handle = -1;
+  readState = nullptr;
+  readData = nullptr;
+  if (logFile) fclose(logFile), logFile = nullptr;
+  logLines = 0;
   memset(&S, 0, sizeof(S));
   memset(S.changedAt, 255, sizeof(S.changedAt));
   S.readStateRet = S.readRet = 0x7fffffff;
@@ -132,6 +142,26 @@ void start(int32_t initialUser) {
     int n = snprintf(line, sizeof(line), "UGEN: %d OF %d OPEN.", opened, tried);
     for (int k = 0; k < kinds && n < 70; k++) n += snprintf(line + n, sizeof(line) - n, " ERR %d X%d", errs[k], errCount[k]);
     step("%s", line);
+
+    // the keyboard itself: its boot-protocol interface, taken from the PS5 while this screen is open
+    UsbKeyboard::Info ki;
+    if (UsbKeyboard::find(ki)) {
+      step("KEYBOARD: %s %04X:%04X IFACE %d EP %02X%s", ki.path, ki.vid, ki.pid, ki.iface, ki.ep,
+           ki.mouseEp >= 0 ? " (+ MOUSE)" : "");
+      logLine("about to take %s from the PS5 (detach, USB_FS)", ki.path);
+      int r = usb.open(ki);
+      if (r == 0) {
+        step("TAKEN FROM THE PS5 (DETACH %d/%d, BOOT PROTOCOL %d). PRESS KEYS", usb.detachRc, usb.detachErr,
+             usb.protocolRc);
+        usbMode = true;
+        S.opened = true;
+        return;
+      }
+      static const char *what[] = {"", "OPEN", "FS_INIT", "FS_OPEN", "FS_START"};
+      step("COULD NOT TAKE IT: %s FAILED, ERRNO %d", what[r < 5 ? r : 0], errno);
+    } else {
+      step("NO BOOT-PROTOCOL KEYBOARD AMONG THEM");
+    }
   }
 
   // 1. Can this app load a system library this way at all? Ones it already
@@ -248,8 +278,70 @@ void start(int32_t initialUser) {
   else step("READING. LEAVE THE KEYBOARD ALONE FOR A SECOND");
 }
 
+// A boot report's keys in words (modifiers, then up to six HID key codes)
+static void keyNames(const uint8_t *r, char *out, size_t n) {
+  static const char *mods[] = {"LCTRL", "LSHIFT", "LALT", "LWIN", "RCTRL", "RSHIFT", "RALT", "RWIN"};
+  size_t at = 0;
+  out[0] = 0;
+  for (int b = 0; b < 8; b++)
+    if (r[0] >> b & 1) at += snprintf(out + at, at < n ? n - at : 0, "%s ", mods[b]);
+  for (int k = 2; k < 8; k++) {
+    uint8_t c = r[k];
+    if (!c) continue;
+    char name[12];
+    if (c >= 0x04 && c <= 0x1d) snprintf(name, sizeof(name), "%c", 'A' + c - 0x04);
+    else if (c >= 0x1e && c <= 0x26) snprintf(name, sizeof(name), "%c", '1' + c - 0x1e);
+    else if (c == 0x27) snprintf(name, sizeof(name), "0");
+    else if (c >= 0x3a && c <= 0x45) snprintf(name, sizeof(name), "F%d", c - 0x39);
+    else {
+      static const struct { uint8_t c; const char *n; } t[] = {
+          {0x28, "RETURN"}, {0x29, "ESC"}, {0x2a, "BACKSPACE"}, {0x2b, "TAB"}, {0x2c, "SPACE"}, {0x2d, "-"},
+          {0x2e, "="}, {0x2f, "["}, {0x30, "]"}, {0x31, "\\"}, {0x33, ";"}, {0x34, "'"}, {0x35, "`"}, {0x36, ","},
+          {0x37, "."}, {0x38, "/"}, {0x39, "CAPS"}, {0x49, "INSERT"}, {0x4a, "HOME"}, {0x4b, "PGUP"}, {0x4c, "DELETE"},
+          {0x4d, "END"}, {0x4e, "PGDN"}, {0x4f, "RIGHT"}, {0x50, "LEFT"}, {0x51, "DOWN"}, {0x52, "UP"}};
+      snprintf(name, sizeof(name), "%02X", c);
+      for (auto &e : t)
+        if (e.c == c) snprintf(name, sizeof(name), "%s", e.n);
+    }
+    at += snprintf(out + at, at < n ? n - at : 0, "%s ", name);
+  }
+  if (!out[0]) snprintf(out, n, "(ALL KEYS UP)");
+}
+
+void stop() {
+  if (usb.isOpen() || usbMode) {
+    usb.close(true);
+    logLine("keyboard given back to the PS5");
+  }
+  usbMode = false;
+}
+
 void frame() {
   if (!S.opened) return;
+  if (usbMode) {
+    S.reads++;
+    uint8_t r[8];
+    S.readStateRet = (int)usb.completions;
+    S.readRet = usb.lastStatus;
+    S.writtenState = (int)usb.reports;
+    S.writtenRead = (int)usb.lastLen;
+    for (int i = 0; i < kStateBytes; i++)
+      if (S.changedAt[i] < 255) S.changedAt[i]++;
+    if (!usb.poll(r)) return;
+    for (int i = 0; i < 8; i++) {
+      if (S.state[i] != r[i]) S.changedAt[i] = 0;
+      S.state[i] = r[i];
+    }
+    char names[64], line[96];
+    keyNames(r, names, sizeof(names));
+    snprintf(line, sizeof(line), "%5ld: %02X %02X %02X %02X %02X %02X %02X %02X  %s", S.reads, r[0], r[1], r[2], r[3], r[4],
+             r[5], r[6], r[7], names);
+    memmove(S.changes[1], S.changes[0], sizeof(S.changes[0]) * (kChanges - 1));
+    snprintf(S.changes[0], sizeof(S.changes[0]), "%s", line);
+    if (S.changeCount < kChanges) S.changeCount++;
+    logLine("%s", line);
+    return;
+  }
   if (S.reads == 0) logLine("about to call sceKeyboardReadState / sceKeyboardRead each frame");
   S.reads++;
   if (readState) {
@@ -320,5 +412,6 @@ void frame() {
 }
 
 const State &state() { return S; }
+bool readingUsb() { return usbMode; }
 
 } // namespace KeyboardProbe

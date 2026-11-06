@@ -36,6 +36,8 @@ struct State {
 
 void start(int32_t initialUser); // load, init, open (once; again it only resets the display)
 void frame();                    // one read a frame
+void stop();                     // leaving the screen: a keyboard taken from the PS5 goes back to it
+bool readingUsb();               // reading the keyboard straight from USB
 const State &state();
 
 } // namespace KeyboardProbe
