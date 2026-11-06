@@ -52,7 +52,7 @@ C= then SHIFT switches upper / lower case. SHIFT LOCK stays on until pressed aga
 RESTORE works too.
 
 **Menu** (Options): BACK TO THE C64, SID MUSIC PLAYER, RESET C64, the joystick port, the volume,
-QUIT TO THE PS5 HOME SCREEN (Cross twice), then the programs and disks. It opens on the program chosen last (or the first one). Choosing one restarts the C64
+USB KEYBOARD TEST (below), QUIT TO THE PS5 HOME SCREEN (Cross twice), then the programs and disks. It opens on the program chosen last (or the first one). Choosing one restarts the C64
 and starts it:
 
 - a `.prg`: loaded straight into memory and RUN (as the board's AUTOSTART does)
@@ -60,6 +60,21 @@ and starts it:
 
 The C64 keeps running behind the menu. D-pad up / down, Cross chooses, left / right change the
 port and the volume, Circle or Options go back.
+
+## USB keyboard test (experimental)
+
+**USB KEYBOARD TEST** in the menu finds out whether a USB keyboard plugged into the PS5 reaches the
+app. It loads Sony's keyboard library (`libSceKeyboard`) while the app runs, opens the keyboard
+and shows, each frame, the raw bytes it returns: red where a byte has just changed, and below, the
+latest changes (`offset=value`, unlike the keyboard left alone). Leave the keyboard alone for the
+first second (that's how it tells a clock in the bytes from a key), then press keys one at a time.
+Circle goes back.
+
+Every step also goes into `kbdtest.txt` (in `/data/homebrew/PPSA99904`, else `/download0`; the
+screen says which, or that neither could be written), written before each call: if the test closes
+the app, the file's last line says which call did it. The code is `src/ps5/KeyboardProbe.*`; the
+simulator has a made-up keyboard (`SIM_KEY="300-320:04"` holds key code 04 in byte 8 for those
+frames, `SIM_NOKBD=1` makes the library fail to load).
 
 ## SID music player
 

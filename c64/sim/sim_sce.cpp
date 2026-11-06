@@ -62,6 +62,50 @@ extern "C" int sceUserServiceGetInitialUser(int32_t *user) {
   return 0;
 }
 
+// ---------------------------------------------------------------- a USB keyboard
+// A made-up libSceKeyboard for the USB KEYBOARD TEST: SIM_KEY="300-320:04;400-410:1d"
+// holds that key code (byte 8) for those frames; bytes 0-3 count like a clock.
+// SIM_NOKBD=1: the library can't be loaded.
+static int kbInit() { return 0; }
+static int kbOpen(int32_t, int32_t, int32_t, const void *) { return 0x2a; }
+static int kbReadState(int32_t, void *data) {
+  uint8_t *d = (uint8_t *)data;
+  memset(d, 0, 48);
+  uint32_t t = (uint32_t)(nowUs() & 0xffffffff);
+  memcpy(d, &t, 4);
+  d[4] = 1; // connected
+  long f = frameNo.load();
+  if (const char *s = getenv("SIM_KEY")) {
+    std::string all = s;
+    size_t at = 0;
+    while (at < all.size()) {
+      long a = 0, b = 0;
+      unsigned k = 0;
+      sscanf(all.c_str() + at, "%ld-%ld:%x", &a, &b, &k);
+      if (f >= a && f <= b) d[8] = (uint8_t)k;
+      at = all.find(';', at);
+      if (at == std::string::npos) break;
+      at++;
+    }
+  }
+  return 0;
+}
+static int kbRead(int32_t h, void *data, int32_t) { return kbReadState(h, data) == 0 ? 1 : -1; }
+
+extern "C" int sceKernelLoadStartModule(const char *path, size_t, const void *, uint32_t, void *, int *) {
+  fprintf(stderr, "SIM: load %s\n", path);
+  if (getenv("SIM_NOKBD") || !strstr(path, "libSceKeyboard")) return (int)0x80020002;
+  return 7;
+}
+extern "C" int sceKernelDlsym(int, const char *symbol, void **address) {
+  *address = nullptr;
+  if (!strcmp(symbol, "sceKeyboardInit")) *address = (void *)kbInit;
+  if (!strcmp(symbol, "sceKeyboardOpen")) *address = (void *)kbOpen;
+  if (!strcmp(symbol, "sceKeyboardReadState")) *address = (void *)kbReadState;
+  if (!strcmp(symbol, "sceKeyboardRead")) *address = (void *)kbRead;
+  return *address ? 0 : -1;
+}
+
 // ---------------------------------------------------------------- video
 static void *buffers[2];
 static std::vector<long> shots;

@@ -26,6 +26,7 @@
 #include "../core/platform/PlatformFactory.h"
 #include "../core/platform/PlatformManager.h"
 #include "../core/roms/charset.h"
+#include "KeyboardProbe.h"
 #include "MusicList.h"
 #include "P4KeyboardData.h"
 #include "P4SidEngine.h"
@@ -484,9 +485,12 @@ enum : uint32_t {
   STICK_UP = 0x01000000, STICK_DOWN = 0x02000000, STICK_LEFT = 0x04000000, STICK_RIGHT = 0x08000000,
 };
 
+static int32_t g_user = -1; // the PS5 user playing
+
 static void padInit() {
   sceUserServiceInitialize(nullptr);
   int32_t user = -1;
+  if (sceUserServiceGetInitialUser(&user) >= 0) g_user = user;
   if (sceUserServiceGetInitialUser(&user) < 0 || user < 0 || scePadInit() < 0) return;
   // (far bigger than the samples need, on its own, in case this firmware's
   // samples are bigger than 120 bytes)
@@ -604,7 +608,7 @@ static void drawToast() {
 }
 
 // ============================================================ the menu
-enum ItemKind { IT_RESUME, IT_SID, IT_RESET, IT_PORT, IT_VOLUME, IT_QUIT, IT_HEADER, IT_FILE, IT_NONE };
+enum ItemKind { IT_RESUME, IT_SID, IT_RESET, IT_PORT, IT_VOLUME, IT_KBDTEST, IT_QUIT, IT_HEADER, IT_FILE, IT_NONE };
 struct Item {
   ItemKind kind;
   std::string name;
@@ -616,6 +620,8 @@ static const int kMenuRows = 16;
 static std::string lastFile; // the program or disk chosen last
 static bool sidOpenRequested = false; // (the SID player is further down)
 static bool quitArmed = false;        // QUIT chosen once: Cross again closes the app
+static bool kbdTestOpen = false;      // the USB KEYBOARD TEST screen
+static int fullCopies = 2; // the sides changed: both scanout buffers need them
 
 static void menuOpenNow() {
   items.clear();
@@ -624,6 +630,7 @@ static void menuOpenNow() {
   items.push_back({IT_RESET, ""});
   items.push_back({IT_PORT, ""});
   items.push_back({IT_VOLUME, ""});
+  items.push_back({IT_KBDTEST, ""});
   items.push_back({IT_QUIT, ""});
   items.push_back({IT_HEADER, "PROGRAMS AND DISKS"});
   std::vector<std::string> files = ps5ListC64Files();
@@ -689,7 +696,7 @@ static void menuInput() {
   }
   if (menuSel < menuTop) menuTop = menuSel;
   if (menuSel >= menuTop + kMenuRows) menuTop = menuSel - kMenuRows + 1;
-  if (menuSel <= 6) menuTop = 0;
+  if (menuSel <= 7) menuTop = 0;
   if (items[menuSel].kind != IT_QUIT) quitArmed = false;
   if (menuTop > (int)items.size() - kMenuRows) menuTop = (int)items.size() > kMenuRows ? (int)items.size() - kMenuRows : 0;
   Item &it = items[menuSel];
@@ -716,6 +723,12 @@ static void menuInput() {
       break;
     case IT_RESUME: menuOpen = false; break;
     case IT_SID: sidOpenRequested = true; break;
+    case IT_KBDTEST:
+      menuOpen = false;
+      kbdTestOpen = true;
+      KeyboardProbe::start(g_user);
+      fullCopies = 2;
+      break;
     case IT_RESET:
       pushCmd(ExtCmd::DETACHD64);
       pushCmd(ExtCmd::RESET);
@@ -754,6 +767,7 @@ static void drawMenu() {
     switch (it.kind) {
     case IT_RESUME: snprintf(line, sizeof(line), "BACK TO THE C64"); break;
     case IT_SID: snprintf(line, sizeof(line), "SID MUSIC PLAYER"); break;
+    case IT_KBDTEST: snprintf(line, sizeof(line), "USB KEYBOARD TEST"); break;
     case IT_QUIT: snprintf(line, sizeof(line), quitArmed ? "QUIT? PRESS X AGAIN" : "QUIT TO THE PS5 HOME SCREEN"); break;
     case IT_RESET: snprintf(line, sizeof(line), "RESET C64"); break;
     case IT_PORT: snprintf(line, sizeof(line), "JOYSTICK PORT        %d", joyPort); break;
@@ -787,7 +801,6 @@ static void drawMenu() {
 }
 
 // ============================================================ the sides
-static int fullCopies = 2; // the sides changed: both scanout buffers need them
 
 // One line of help: a button (its symbol, or its name in a box) and what it does.
 // labelCx: the button's centre from x; textDx: where the words start
@@ -1208,6 +1221,45 @@ static void drawSidVisuals(int view) {
   else sidVisuals.draw(g_frame, view - 2, in, font, dt);
 }
 
+// ============================================================ the USB keyboard test
+// What KeyboardProbe found, for a photo or a PS5 screenshot: the set-up
+// steps, the bytes the keyboard library returns (red: changed just now),
+// and the latest changes (offset=value, unlike the keyboard left alone).
+static void drawKbdTest() {
+  const uint32_t blue = kC64Pal[6], light = kC64Pal[14], white = kC64Pal[1], yellow = kC64Pal[7], red = rgb(0xff, 0x30, 0x30),
+                 grey = kC64Pal[12];
+  const KeyboardProbe::State &S = KeyboardProbe::state();
+  fillRect(0, 0, kW, 1080, blue);
+  text(64, 40, "**** USB KEYBOARD TEST ****", 4, light);
+  text(64, 90, "PLUG A USB KEYBOARD INTO THE PS5, THEN PRESS KEYS ONE AT A TIME. CIRCLE: BACK", 2, white);
+  char line[128];
+  snprintf(line, sizeof(line), "LOG FILE: %s", S.logPath[0] ? S.logPath : "(NONE COULD BE WRITTEN)");
+  text(64, 116, line, 2, S.logPath[0] ? yellow : grey);
+  int y = 160;
+  for (int i = 0; i < S.stepCount; i++, y += 22) text(64, y, S.steps[i], 2, light);
+  y = 160 + KeyboardProbe::kLines * 22 + 10;
+  if (S.opened) {
+    snprintf(line, sizeof(line), "READ %ld   READSTATE: %08X (%d BYTES)   READ: %08X (%d BYTES)", S.reads, (unsigned)S.readStateRet,
+             S.writtenState, (unsigned)S.readRet, S.writtenRead);
+    text(64, y, line, 2, white);
+    y += 34;
+    for (int row = 0; row < KeyboardProbe::kStateBytes / 16; row++, y += 26) {
+      snprintf(line, sizeof(line), "%02X:", row * 16);
+      text(64, y, line, 2, grey);
+      for (int c = 0; c < 16; c++) {
+        int i = row * 16 + c;
+        snprintf(line, sizeof(line), "%02X", S.state[i]);
+        uint32_t col = S.changedAt[i] < 30 ? red : (S.state[i] != S.idle[i] ? yellow : light);
+        text(64 + 72 + c * 56, y, line, 2, col);
+      }
+    }
+    y += 16;
+    text(64, y, S.reads < 60 ? "LATEST CHANGES: (WAITING: LEAVE THE KEYBOARD ALONE)" : "LATEST CHANGES (READ: OFFSET=VALUE):", 2, white);
+    y += 28;
+    for (int i = 0; i < S.changeCount; i++, y += 24) text(64, y, S.changes[i], 2, i == 0 ? yellow : light);
+  }
+}
+
 // ============================================================ once a frame
 static void frameInput() {
   padRead();
@@ -1215,6 +1267,17 @@ static void frameInput() {
   pressed = held & ~prevHeld;
   prevHeld = held;
 
+  if (kbdTestOpen) {
+    g_c64Joy[0].store(0xff);
+    g_c64Joy[1].store(0xff);
+    KeyboardProbe::frame();
+    if (pressed & (RAW_CIRCLE | RAW_OPTIONS)) {
+      kbdTestOpen = false;
+      drawSides();
+    }
+    sendKey(held);
+    return;
+  }
   if (sidOpen) {
     g_c64Joy[0].store(0xff);
     g_c64Joy[1].store(0xff);
@@ -1335,7 +1398,10 @@ int main() {
     }
 #endif
     cpu->vic.refresh(); // the newest finished C64 picture into g_c64Pixels
-    if (sidOpen) {
+    if (kbdTestOpen) {
+      drawKbdTest();
+      fullCopies = 1;
+    } else if (sidOpen) {
       if (sidView <= 1) drawSidPlayer();
       if (sidView >= 1) drawSidVisuals(sidView);
       fullCopies = 1; // (the player has the whole TV)
