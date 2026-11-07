@@ -175,6 +175,15 @@ void forEachKickstart(void (*fn)(const char *name, const uint8_t *data, size_t l
   }
 }
 
+std::vector<std::string> listHardDrives() {
+  std::vector<std::string> out;
+  for (auto &n : allNames())
+    if (endsWith(n, ".hdf") || endsWith(n, ".hdz")) out.push_back(n);
+  return out;
+}
+
+std::string pathOf(const std::string &name) { return folder() + name; }
+
 std::vector<std::string> listDisks() {
   std::vector<std::string> disks;
   for (auto &n : allNames())

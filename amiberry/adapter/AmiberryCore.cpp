@@ -365,10 +365,44 @@ void amigaSetModel(int i) {
 }
 bool amigaModelChanging() { return modelRequest.load() >= 0; }
 
+// ------------------------------------------------------------ the hard drive
+// An .hdf Amiberry boots from as DH0: (its "game"); "" none. The app's
+// assets as /app0 are read-only: the same file in the app's folder under
+// /data/homebrew, where the Amiga can write to it, if it is there.
+static std::string hdNow;
+static std::string hdRequestPath;
+static std::atomic<bool> hdRequest{false};
+static std::string writablePath(const std::string &p) {
+  static const char *app0 = "/app0/";
+  if (p.compare(0, strlen(app0), app0)) return p;
+  std::string alt = "/data/homebrew/PPSA99906/" + p.substr(strlen(app0));
+  struct stat st;
+  return stat(alt.c_str(), &st) == 0 ? alt : p;
+}
+void amigaSetHardDrive(const char *path) {
+  if (hdRequest.load()) return;
+  hdRequestPath = path ? writablePath(path) : "";
+  hdRequest.store(true);
+}
+const char *amigaHardDrive() { return hdNow.c_str(); }
+
 static void saveModel() {
   std::string m = models[modelNow.load()].name;
   writeFile(std::string(kSystemDir) + "/model.txt", (const uint8_t *)m.data(), m.size());
 }
+static void saveHardDrive() {
+  writeFile(std::string(kSystemDir) + "/harddrive.txt", (const uint8_t *)hdNow.data(), hdNow.size());
+}
+static void loadHardDrive() {
+  FILE *f = fopen((std::string(kSystemDir) + "/harddrive.txt").c_str(), "r");
+  if (!f) return;
+  char line[512] = {};
+  fgets(line, sizeof line, f);
+  fclose(f);
+  struct stat st;
+  if (line[0] && stat(line, &st) == 0) hdNow = line;
+}
+
 static void loadModel() {
   FILE *f = fopen((std::string(kSystemDir) + "/model.txt").c_str(), "r");
   if (!f) return;
@@ -555,11 +589,13 @@ static void coreStart() {
   retro_set_controller_port_device(0, RETRO_DEVICE_MOUSE);
   retro_set_controller_port_device(1, RETRO_DEVICE_JOYPAD);
   if (diskNow.empty()) diskNow = firstDisk;
+  // (a hard drive: Amiberry's "game", DH0:, booted from; else the floppy)
+  const std::string &content = hdNow.empty() ? diskNow : hdNow;
   retro_game_info info{};
-  info.path = diskNow.empty() ? nullptr : diskNow.c_str();
+  info.path = content.empty() ? nullptr : content.c_str();
   logLine("PS5: retro_load_game...\n");
-  loaded = retro_load_game(diskNow.empty() ? nullptr : &info);
-  logLine("PS5: retro_load_game(%s): %s\n", diskNow.empty() ? "no disk" : diskNow.c_str(), loaded ? "ok" : "FAILED");
+  loaded = retro_load_game(content.empty() ? nullptr : &info);
+  logLine("PS5: retro_load_game(%s): %s\n", content.empty() ? "no disk" : content.c_str(), loaded ? "ok" : "FAILED");
 }
 
 // The emulator thread: one PAL frame
@@ -583,20 +619,31 @@ void amigaRunFrame(AmigaFrameTimes *times) {
     // Amiberry's data folder (it looks for one before anything else)
     setenv("AMIBERRY_DATA_DIR", kSystemDir, 1);
     loadModel();
+    loadHardDrive();
     for (int i = 0; i < kModels && !models[modelNow.load()].have; i++)
       if (models[i].have) modelNow.store(i);
     coreStart();
   }
-  // Another model: Amiberry stopped and started again (its settings for
-  // the machine are read at the start), with the disk that was in
-  if (int m = modelRequest.exchange(-1); m >= 0) {
-    logLine("PS5: model %s: Amiberry stops...\n", models[m].name);
+  // Another model or hard drive: Amiberry stopped and started again (its
+  // settings for the machine are read at the start), with the disk that was in
+  int m = modelRequest.exchange(-1);
+  bool hd = hdRequest.load();
+  if (m >= 0 || hd) {
+    logLine("PS5: %s %s: Amiberry stops...\n", m >= 0 ? "model" : "hard drive",
+            m >= 0 ? models[m].name : hdRequestPath.empty() ? "none" : hdRequestPath.c_str());
     if (loaded) {
       retro_unload_game();
       retro_deinit();
     }
-    modelNow.store(m);
-    saveModel();
+    if (m >= 0) {
+      modelNow.store(m);
+      saveModel();
+    }
+    if (hd) {
+      hdNow = hdRequestPath;
+      saveHardDrive();
+      hdRequest.store(false);
+    }
     coreStart();
   }
   if (!loaded) return;

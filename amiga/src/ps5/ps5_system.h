@@ -22,6 +22,10 @@ std::string loadKickstart(uint8_t *rom);
 // Every Kickstart-looking file (.rom and the like), decrypted if it is
 // Amiga Forever's: fn(name, data, length) for each
 void forEachKickstart(void (*fn)(const char *name, const uint8_t *data, size_t len));
+// The hard-drive images (.hdf, .hdz), sorted by name
+std::vector<std::string> listHardDrives();
+// A file's whole path (the app's assets/amiga/ folder)
+std::string pathOf(const std::string &name);
 // The .adf disks, sorted by name
 std::vector<std::string> listDisks();
 // Read a disk image (901120 bytes) into buf. Returns "" or why not.

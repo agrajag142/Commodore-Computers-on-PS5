@@ -45,6 +45,10 @@ const char *amigaModelKickstart(int i);
 bool amigaModelAvailable(int i);
 int amigaModel();
 void amigaSetModel(int i);
+// the hard-drive image Amiberry boots from (a whole path; "" none): it
+// restarts with it
+void amigaSetHardDrive(const char *path);
+const char *amigaHardDrive();
 static const char *modelLabel() { return amigaModelName(amigaModel()) + 1; } // (A1200: 1200)
 #else
 static const char *modelLabel() { return "500"; }
@@ -357,6 +361,14 @@ static void soundStart() {
 
 // ============================================================ disks
 static std::vector<std::string> disks;
+static std::vector<std::string> hardDrives; // (.hdf: the Amiberry build)
+#ifdef AMIBERRY
+static std::string hardDriveNow() { // (the name of the one in DH0:, "" none)
+  std::string p = amigaHardDrive();
+  size_t s = p.rfind('/');
+  return s == std::string::npos ? p : p.substr(s + 1);
+}
+#endif
 static std::string diskInDrive;           // DF0:
 static uint8_t *diskBuf = nullptr;        // a disk on its way in (AmigaCore copies it)
 static char status[96] = "";
@@ -1226,7 +1238,7 @@ static void drawOsk() {
 }
 
 // ============================================================ the menu
-enum ItemKind { IT_RESUME, IT_MOD, IT_OSK, IT_RESET, IT_MODEL, IT_VOLUME, IT_USBKBD, IT_QUIT, IT_HEADER, IT_DISK, IT_NONE };
+enum ItemKind { IT_RESUME, IT_MOD, IT_OSK, IT_RESET, IT_MODEL, IT_VOLUME, IT_USBKBD, IT_QUIT, IT_HEADER, IT_DISK, IT_NONE, IT_HDF };
 struct Item {
   ItemKind kind;
   std::string name;
@@ -1254,6 +1266,13 @@ static void menuOpenNow() {
   items.push_back({IT_HEADER, ""});
   for (auto &d : disks) items.push_back({IT_DISK, d});
   if (disks.empty()) items.push_back({IT_NONE, "(no .adf disks in the app)"});
+#ifdef AMIBERRY
+  if (!hardDrives.empty()) {
+    items.push_back({IT_HEADER, "Hard drives (DH0:):   X boot from it"});
+    items.push_back({IT_HDF, ""}); // (none)
+    for (auto &h : hardDrives) items.push_back({IT_HDF, h});
+  }
+#endif
   menuSel = 0;
   for (int i = 0; i < (int)items.size(); i++)
     if (items[i].kind == IT_DISK && (menuSel == 0 || items[i].name == diskInDrive)) {
@@ -1324,6 +1343,14 @@ static void menuInput() {
     quitArmed = true;
     return;
   }
+#ifdef AMIBERRY
+  if (it.kind == IT_HDF && (pressed & RAW_CROSS)) {
+    amigaSetHardDrive(it.name.empty() ? "" : AmigaFiles::pathOf(it.name).c_str());
+    snprintf(status, sizeof(status), "%s %s", it.name.empty() ? "NO HARD DRIVE" : "DH0:", it.name.c_str());
+    menuOpen = false;
+    return;
+  }
+#endif
   if (it.kind == IT_DISK && (pressed & (RAW_CROSS | RAW_SQUARE))) {
     bool boot = (pressed & RAW_CROSS) != 0;
     requestDisk(it.name, boot);
@@ -1392,7 +1419,7 @@ static void drawMenu() {
                                                         : usbKb.hasMouse() ? "+ mouse in use" : "      in use");
       break;
     case IT_HEADER:
-      snprintf(line, sizeof(line), "Disks:   X boot from it    [] swap into DF0:");
+      snprintf(line, sizeof(line), "%s", it.name.empty() ? "Disks:   X boot from it    [] swap into DF0:" : it.name.c_str());
       col = kWbBlack;
       break;
     case IT_DISK:
@@ -1400,6 +1427,14 @@ static void drawMenu() {
       if (it.name == diskInDrive) col = kWbOrange;
       break;
     case IT_NONE: snprintf(line, sizeof(line), "%s", it.name.c_str()); col = kWbBlack; break;
+    case IT_HDF: {
+#ifdef AMIBERRY
+      bool now = it.name == hardDriveNow();
+      snprintf(line, sizeof(line), "%s%.48s", now ? "DH0: " : "     ", it.name.empty() ? "(no hard drive)" : it.name.c_str());
+      if (now) col = kWbOrange;
+#endif
+      break;
+    }
     }
     int ly = ty + r * rowH;
     if (i == menuSel) {
@@ -1547,6 +1582,7 @@ int main() {
   if (err.empty()) {
     // the disk at start-up: default.adf, else the first one
     disks = AmigaFiles::listDisks();
+    hardDrives = AmigaFiles::listHardDrives();
     std::string boot;
     for (auto &d : disks)
       if (strcasecmp(d.c_str(), "default.adf") == 0) boot = d;
