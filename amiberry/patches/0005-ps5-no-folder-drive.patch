@@ -1,0 +1,16 @@
+--- a/libretro/libretro.cpp	2026-11-07 13:30:20.018515770 +1030
++++ b/libretro/libretro.cpp	2026-11-07 20:42:56.582520300 +1030
+@@ -4645,7 +4645,13 @@
+ 				? ",0,0,0,512,0"
+ 				: ",32,1,2,512,0";
+ 			push_s_option(std::string("hardfile2=rw,DH0:") + std::string(game_path) + hdf_geometry);
++#if defined(__PROSPERO__) || defined(__FreeBSD__)
++			// PS5: no folder can be listed or looked at (lstat), so no
++			// folder drive (it took the app down as it was set up)
++			if (false) {
++#else
+ 			if (!save_dir.empty()) {
++#endif
+ 				const std::string saves_path = save_dir + "/WHDSaves";
+ 				ensure_host_directory(saves_path);
+ 				push_s_option("filesystem2=rw,DH1:WHDSaves:" + saves_path + ",0");

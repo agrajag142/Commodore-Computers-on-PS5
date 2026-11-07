@@ -78,11 +78,25 @@ static void dumpContext(void *ctx) {
 }
 #include <setjmp.h>
 #include <sys/mman.h>
+static void faultTest(const char *what, volatile char *where);
+static void (*testFaultAt)(const char *, volatile char *) = faultTest;
 static sigjmp_buf testJump;
 static volatile int testing = 0;
 static void onCrash(int sig, siginfo_t *info, void *ctx) {
   if (testing) { // (the self-test's own fault: back to it)
     testing = 0;
+    // (where in the context the PS5 keeps the instruction pointer: the word
+    // that points into faultTest)
+    if (logFn && ctx) {
+      const uintptr_t *w = (const uintptr_t *)ctx;
+      uintptr_t lo = (uintptr_t)testFaultAt, hi = lo + 0x400;
+      char line[64];
+      for (int i = 0; i < 128; i++)
+        if (w[i] >= lo && w[i] < hi) {
+          snprintf(line, sizeof line, "PS5: self-test: pc is context word %d\n", i);
+          logFn(line);
+        }
+    }
     siglongjmp(testJump, sig);
   }
   if (crashing++) _exit(2); // (a crash while reporting one)

@@ -401,7 +401,17 @@ static void loadHardDrive() {
   fclose(f);
   struct stat st;
   if (line[0] && stat(line, &st) == 0) hdNow = line;
+  // (the app went down last time with it in, before it had run 10 seconds:
+  // started without it, so it doesn't go down again)
+  std::string trying = std::string(kSystemDir) + "/harddrive.try";
+  if (!hdNow.empty() && stat(trying.c_str(), &st) == 0) {
+    logLine("PS5: %s took the app down last time: left out\n", hdNow.c_str());
+    hdNow.clear();
+    saveHardDrive();
+    unlink(trying.c_str());
+  }
 }
+static int hdFrames = -1; // (frames run with the hard drive in; -1 none)
 
 static void loadModel() {
   FILE *f = fopen((std::string(kSystemDir) + "/model.txt").c_str(), "r");
@@ -589,6 +599,10 @@ static void coreStart() {
   retro_set_controller_port_device(0, RETRO_DEVICE_MOUSE);
   retro_set_controller_port_device(1, RETRO_DEVICE_JOYPAD);
   if (diskNow.empty()) diskNow = firstDisk;
+  if (!hdNow.empty()) {
+    writeFile(std::string(kSystemDir) + "/harddrive.try", (const uint8_t *)"1", 1);
+    hdFrames = 0;
+  }
   // (a hard drive: Amiberry's "game", DH0:, booted from; else the floppy)
   const std::string &content = hdNow.empty() ? diskNow : hdNow;
   retro_game_info info{};
@@ -676,6 +690,10 @@ void amigaRunFrame(AmigaFrameTimes *times) {
     unsigned code = rawToRetrok(k & 0x7f);
     if (coreKeyboard && code != RETROK_UNKNOWN) coreKeyboard(!(k & 0x80), code, 0, 0);
     keyTail.store(t + 1, std::memory_order_release);
+  }
+  if (hdFrames >= 0 && ++hdFrames == 500) { // (10 seconds with it: it's fine)
+    unlink((std::string(kSystemDir) + "/harddrive.try").c_str());
+    hdFrames = -1;
   }
   static int frames;
   if (frames < 10 || frames % 500 == 0) logLine("PS5: frame %d\n", frames);
