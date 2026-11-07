@@ -14,3 +14,6 @@ src/devices.cpp
 src/savestate.cpp
 src/rommgr.cpp
 src/osdep/libretro/writelog.cpp
+src/drawing.cpp
+libretro/sdl_stub.cpp
+src/threaddep/threading.cpp

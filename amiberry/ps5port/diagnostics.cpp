@@ -265,19 +265,35 @@ extern "C" int ps5portDiagnostics(void (*log)(const char *)) {
 static volatile int traceOn = 0;
 static pthread_t traceThread;
 static int traceCount = 0;
-static uintptr_t traceLast = 0;
+// (the threads started through ps5port/threads.c: their trace lines are
+// marked A, B, C...; the emulator thread's T, any other thread's U)
+static pthread_t traceThreads[16];
+static volatile int traceThreadCount = 0;
+static uintptr_t traceLast[18];
+extern "C" __attribute__((no_instrument_function)) void ps5portTraceThread(void) {
+  int i = __atomic_fetch_add(&traceThreadCount, 1, __ATOMIC_SEQ_CST);
+  if (i < 16) traceThreads[i] = pthread_self();
+}
 extern "C" __attribute__((no_instrument_function)) void ps5portTrace(int on) {
   traceThread = pthread_self();
-  traceLast = 0;
+  memset(traceLast, 0, sizeof traceLast);
   traceOn = on;
   if (logFn) logFn(on ? "PS5: trace on\n" : "PS5: trace off\n");
 }
 extern "C" __attribute__((no_instrument_function)) void __cyg_profile_func_enter(void *fn, void *) {
-  if (!traceOn || !logFn || (uintptr_t)fn == traceLast || !pthread_equal(pthread_self(), traceThread)) return;
-  traceLast = (uintptr_t)fn;
-  if (++traceCount > 400000) { traceOn = 0; logFn("PS5: trace full\n"); return; }
+  if (!traceOn || !logFn) return;
+  pthread_t self = pthread_self();
+  int slot = 17;
+  char tag = 'U';
+  if (pthread_equal(self, traceThread)) slot = 16, tag = 'T';
+  else
+    for (int i = 0; i < traceThreadCount && i < 16; i++)
+      if (pthread_equal(self, traceThreads[i])) { slot = i; tag = (char)('A' + i); break; }
+  if ((uintptr_t)fn == traceLast[slot]) return;
+  traceLast[slot] = (uintptr_t)fn;
+  if (__atomic_add_fetch(&traceCount, 1, __ATOMIC_RELAXED) > 400000) { traceOn = 0; logFn("PS5: trace full\n"); return; }
   char line[32];
-  snprintf(line, sizeof line, "T%llx\n", (long long)((uintptr_t)fn - (uintptr_t)&ps5portDiagnostics));
+  snprintf(line, sizeof line, "%c%llx\n", tag, (long long)((uintptr_t)fn - (uintptr_t)&ps5portDiagnostics));
   logFn(line);
 }
 extern "C" __attribute__((no_instrument_function)) void __cyg_profile_func_exit(void *, void *) {}
