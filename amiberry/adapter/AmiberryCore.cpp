@@ -210,7 +210,9 @@ static int16_t RETRO_CALLCONV inputState(unsigned port, unsigned device, unsigne
     }
     return 0;
   }
-  if (device == RETRO_DEVICE_JOYPAD && port == 1) {
+  // (Amiberry reads the joystick in the Amiga's port 2 from libretro pad 0,
+  // "Libretro Joystick 1"; the mouse from port 0's mouse)
+  if (device == RETRO_DEVICE_JOYPAD && port == 0) {
     unsigned b = joyBits.load(std::memory_order_relaxed);
     if (id == RETRO_DEVICE_ID_JOYPAD_MASK) return (int16_t)b;
     return (int16_t)((b >> id) & 1);
@@ -327,7 +329,7 @@ static bool RETRO_CALLCONV environment(unsigned cmd, void *data) {
   case RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK:
     coreKeyboard = ((const retro_keyboard_callback *)data)->callback;
     return true;
-  case RETRO_ENVIRONMENT_GET_LED_INTERFACE:
+  case RETRO_ENVIRONMENT_GET_LED_INTERFACE & ~RETRO_ENVIRONMENT_EXPERIMENTAL:
     ((retro_led_interface *)data)->set_led_state = setLed;
     return true;
   case RETRO_ENVIRONMENT_SET_DISK_CONTROL_EXT_INTERFACE:
@@ -341,7 +343,7 @@ static bool RETRO_CALLCONV environment(unsigned cmd, void *data) {
   case RETRO_ENVIRONMENT_GET_DISK_CONTROL_INTERFACE_VERSION:
     *(unsigned *)data = 1;
     return true;
-  case RETRO_ENVIRONMENT_GET_INPUT_BITMASKS:
+  case RETRO_ENVIRONMENT_GET_INPUT_BITMASKS & ~RETRO_ENVIRONMENT_EXPERIMENTAL:
     return true;
   case RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME:
   case RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS:
@@ -350,7 +352,7 @@ static bool RETRO_CALLCONV environment(unsigned cmd, void *data) {
   case RETRO_ENVIRONMENT_SET_GEOMETRY:
   case RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO:
   case RETRO_ENVIRONMENT_SET_MESSAGE:
-  case RETRO_ENVIRONMENT_SET_MEMORY_MAPS:
+  case RETRO_ENVIRONMENT_SET_MEMORY_MAPS & ~RETRO_ENVIRONMENT_EXPERIMENTAL:
     return true;
   }
   return false;
