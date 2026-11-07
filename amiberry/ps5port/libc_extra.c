@@ -378,3 +378,18 @@ int unlinkat(int dir, const char *p, int flags) {
   if (dir != AT_FDCWD_ && p[0] != '/') { errno = ENOSYS; return -1; }
   return (flags & 0x0800) ? rmdir(p) : unlink(p); /* AT_REMOVEDIR */
 }
+
+/* access(): refused in the PS5's sandbox even for files the app can read
+ * (Amiberry found no kick.rom it had just been given). From stat instead:
+ * what exists may be read; the app's own storage may be written. */
+struct stat;
+int stat(const char *, struct stat *);
+int access(const char *p, int mode) {
+  char st[512]; /* (room for any struct stat) */
+  if (!p || stat(p, (struct stat *)st) != 0) return -1;
+  if ((mode & 2) && strncmp(p, "/download0", 10) != 0 && strncmp(p, "/data", 5) != 0) {
+    errno = EACCES;
+    return -1;
+  }
+  return 0;
+}

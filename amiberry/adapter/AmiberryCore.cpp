@@ -30,6 +30,7 @@
 #include <sys/stat.h>
 
 int64_t (*amigaMicros)() = nullptr;
+extern "C" int ps5portDiagnostics(void (*log)(const char *)); // (ps5port/diagnostics.cpp)
 
 // ------------------------------------------------------------ where files go
 static const char *kSystemDir = "/download0/amiberry"; // the app's own storage (writable)
@@ -411,6 +412,9 @@ void amigaRunFrame(AmigaFrameTimes *times) {
     retro_set_audio_sample_batch(audioBatch);
     retro_set_input_poll(inputPoll);
     retro_set_input_state(inputState);
+    ps5portDiagnostics([](const char *s) { logLine("%s", s); });
+    // Amiberry's data folder (it looks for one before anything else)
+    setenv("AMIBERRY_DATA_DIR", kSystemDir, 1);
     logLine("PS5: retro_init...\n");
     retro_init();
     logLine("PS5: retro_init done\n");
