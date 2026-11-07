@@ -355,3 +355,6 @@ extern "C" void ps5portSelfTest(void) {
   if (logFn) logFn("PS5: self-test done\n");
   (void)testWhat;
 }
+extern "C" void ps5portLogLine(const char *line) {
+  if (logFn) logFn(line);
+}
