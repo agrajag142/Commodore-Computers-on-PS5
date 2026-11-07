@@ -89,6 +89,29 @@ extern "C" void ps5portWatch(void) {
 }
 extern "C" void ps5portPoke(pthread_t t) { pthread_kill(t, SIGUSR2); }
 
+// Every C++ exception, as it is thrown (the link wraps __cxa_throw): its type,
+// its message and who threw it, into the log
+#include <typeinfo>
+extern "C" [[noreturn]] void __real___cxa_throw(void *obj, std::type_info *type, void (*dtor)(void *));
+extern "C" [[noreturn]] void __wrap___cxa_throw(void *obj, std::type_info *type, void (*dtor)(void *)) {
+  if (logFn) {
+    char line[256];
+    long long from = (long long)((uintptr_t)__builtin_return_address(0) - (uintptr_t)&ps5portDiagnostics);
+    snprintf(line, sizeof(line), "PS5: throw %s from ref%+lld", type ? type->name() : "?", from);
+    logFn(line);
+    // (what() if it is a std::exception: the common case in Amiberry)
+    // (the standard library's own exceptions all derive from std::exception
+    // first: their names start with St / NSt)
+    const char *n = type ? type->name() : "";
+    if (!strncmp(n, "St", 2) || !strncmp(n, "NSt", 3)) {
+      logFn(": ");
+      logFn(static_cast<std::exception *>(obj)->what());
+    }
+    logFn("\n");
+  }
+  __real___cxa_throw(obj, type, dtor);
+}
+
 // 1: an exception thrown and caught here (the unwinder works)
 extern "C" int ps5portDiagnostics(void (*log)(const char *)) {
   logFn = log;

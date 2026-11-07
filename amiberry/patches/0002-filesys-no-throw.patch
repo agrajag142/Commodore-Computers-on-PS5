@@ -1,0 +1,23 @@
+diff --git a/src/osdep/amiberry_filesys.cpp b/src/osdep/amiberry_filesys.cpp
+index c6619bb..d692240 100644
+--- a/src/osdep/amiberry_filesys.cpp
++++ b/src/osdep/amiberry_filesys.cpp
+@@ -860,14 +860,16 @@ bool my_existsfile(const char* name)
+ {
+ 	if (!name) return false;
+ 	const auto output = iso_8859_1_to_utf8(string(name));
+-	return fs::exists(output) && fs::is_regular_file(output);
++	std::error_code ec; // (PS5 port: a path the sandbox hides is "not there", not an exception)
++	return fs::exists(output, ec) && fs::is_regular_file(output, ec);
+ }
+ 
+ bool my_existsdir(const char* name)
+ {
+ 	if (!name) return false;
+ 	const auto output = iso_8859_1_to_utf8(string(name));
+-	return fs::exists(output) && fs::is_directory(output);
++	std::error_code ec; // (PS5 port: as above)
++	return fs::exists(output, ec) && fs::is_directory(output, ec);
+ }
+ 
+ uae_s64 my_fsize(struct my_openfile_s* mos)
