@@ -76,7 +76,15 @@ static void dumpContext(void *ctx) {
   }
   logFn("\n");
 }
+#include <setjmp.h>
+#include <sys/mman.h>
+static sigjmp_buf testJump;
+static volatile int testing = 0;
 static void onCrash(int sig, siginfo_t *info, void *ctx) {
+  if (testing) { // (the self-test's own fault: back to it)
+    testing = 0;
+    siglongjmp(testJump, sig);
+  }
   if (crashing++) _exit(2); // (a crash while reporting one)
   char line[96];
   snprintf(line, sizeof(line), "PS5: crash: fault address %p\n", info ? info->si_addr : nullptr);
@@ -303,4 +311,47 @@ extern "C" void ps5portLogThread(void *fn, int result) {
   snprintf(line, sizeof line, "PS5: thread ref%+lld started (%d)\n",
            (long long)((uintptr_t)fn - (uintptr_t)&ps5portDiagnostics), result);
   logFn(line);
+}
+
+// Self-test: does a fault reach our handler, on the thread's own stack and
+// on a libco stack (where Amiberry runs), for a missing page and for a
+// reserved (no access) page as Amiberry's memory is?
+extern "C" void *co_active(void);
+extern "C" void *co_create(unsigned int, void (*)(void));
+extern "C" void co_switch(void *);
+extern "C" void co_delete(void *);
+static void *testMain, *testPage;
+static const char *testWhat;
+static void faultTest(const char *what, volatile char *where) {
+  char line[128];
+  snprintf(line, sizeof line, "PS5: self-test %s...\n", what);
+  if (logFn) logFn(line);
+  int sig = sigsetjmp(testJump, 1);
+  if (!sig) {
+    testing = 1;
+    *where = 1;
+    testing = 0;
+    snprintf(line, sizeof line, "PS5: self-test %s: no fault at all\n", what);
+  } else {
+    snprintf(line, sizeof line, "PS5: self-test %s: reported (signal %d)\n", what, sig);
+  }
+  if (logFn) logFn(line);
+}
+static void testFiber() {
+  faultTest("fiber, missing page", (volatile char *)8);
+  faultTest("fiber, reserved page", (volatile char *)testPage);
+  co_switch(testMain);
+}
+extern "C" void ps5portSelfTest(void) {
+  testPage = mmap(nullptr, 65536, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+  faultTest("thread, missing page", (volatile char *)8);
+  if (testPage != MAP_FAILED) faultTest("thread, reserved page", (volatile char *)testPage);
+  testMain = co_active();
+  void *f = co_create(256 * 1024, testFiber);
+  if (f) {
+    co_switch(f);
+    co_delete(f);
+  }
+  if (logFn) logFn("PS5: self-test done\n");
+  (void)testWhat;
 }

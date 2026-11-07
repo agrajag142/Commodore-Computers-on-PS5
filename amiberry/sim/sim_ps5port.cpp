@@ -14,6 +14,7 @@ extern "C" int ps5portDiagnostics(void (*log)(const char *)) {
 extern "C" void ps5portWatch(void) {}
 extern "C" void ps5portPoke(pthread_t) {}
 extern "C" void ps5portTrace(int) {}
+extern "C" void ps5portSelfTest(void) {}
 
 extern "C" DIR *opendir(const char *name) {
   if (getenv("SIM_SANDBOX")) {

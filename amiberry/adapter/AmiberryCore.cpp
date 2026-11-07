@@ -35,6 +35,7 @@
 int64_t (*amigaMicros)() = nullptr;
 extern "C" int ps5portDiagnostics(void (*log)(const char *)); // (ps5port/diagnostics.cpp)
 extern "C" void ps5portWatch(void);
+extern "C" void ps5portSelfTest(void);
 extern "C" void ps5portPoke(pthread_t t);
 extern "C" void ps5portTrace(int on); // (functions entered, into the log: frame 2, where the PS5 build dies)
 
@@ -454,6 +455,7 @@ void amigaRunFrame(AmigaFrameTimes *times) {
     ps5portDiagnostics([](const char *s) { logLine("%s", s); });
     // a crash or a hang in the emulator: where, into the log
     ps5portWatch();
+    ps5portSelfTest();
     emuThread = pthread_self();
     pthread_t w;
     pthread_create(&w, nullptr, watchdog, nullptr);
