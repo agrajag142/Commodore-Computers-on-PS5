@@ -387,7 +387,7 @@ int stat(const char *, struct stat *);
 int access(const char *p, int mode) {
   char st[512]; /* (room for any struct stat) */
   if (!p || stat(p, (struct stat *)st) != 0) return -1;
-  if ((mode & 2) && strncmp(p, "/download0", 10) != 0 && strncmp(p, "/data", 5) != 0) {
+  if ((mode & 2) && p[0] == '/' && strncmp(p, "/download0", 10) != 0 && strncmp(p, "/data", 5) != 0) {
     errno = EACCES;
     return -1;
   }
