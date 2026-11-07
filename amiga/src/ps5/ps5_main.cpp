@@ -50,6 +50,7 @@ void amigaSetModel(int i);
 void amigaSetHardDrive(const char *path);
 const char *amigaHardDrive();
 int hd_led(void); // (the hard drive's light)
+void amigaStartHardDrive(const char *defaultPath);
 static const char *modelLabel() { return amigaModelName(amigaModel()) + 1; } // (A1200: 1200)
 #else
 static const char *modelLabel() { return "500"; }
@@ -1459,7 +1460,9 @@ static void sideRow(int x, int y, Icon ic, const char *btn, const char *what) {
   text(x + 84, y, what, 2, kText);
 }
 
+static bool statusStale = true; // (the side panel redrawn: the status on it too)
 static void drawSides() {
+  statusStale = true;
   fillRect(0, 0, kW, kH, kSideBg);
   if (oskOpen) {
     // the keyboard's help: left the keys, right the mouse and the rest
@@ -1541,7 +1544,8 @@ static void drawStatus() {
   bool hdLed = false;
 #endif
   snprintf(now, sizeof(now), "%s|%d|%s|%d|%s|%d", diskInDrive.c_str(), emuFps.load(), status, led, hd.c_str(), hdLed);
-  if (strcmp(now, shown) == 0) return;
+  if (strcmp(now, shown) == 0 && !statusStale) return;
+  statusStale = false;
   snprintf(shown, sizeof(shown), "%s", now);
   fillRect(0, 900, 320, 180, kSideBg);
   text(28, 910, "DF0:", 2, kDim);
@@ -1608,6 +1612,15 @@ int main() {
     for (auto &d : disks)
       if (strcasecmp(d.c_str(), "default.adf") == 0) boot = d;
     if (boot.empty() && !disks.empty()) boot = disks[0];
+#ifdef AMIBERRY
+    // a hard drive at start (the one chosen last time, else default.hdf):
+    // booted from, with no floppy in
+    std::string defHdf;
+    for (auto &h : hardDrives)
+      if (strcasecmp(h.c_str(), "default.hdf") == 0) defHdf = AmigaFiles::pathOf(h);
+    amigaStartHardDrive(defHdf.empty() ? nullptr : defHdf.c_str());
+    if (amigaHardDrive()[0]) boot.clear();
+#endif
     if (!boot.empty()) {
       uint8_t *adf = drive_alloc_adf();
       std::string e = adf ? AmigaFiles::readDisk(boot, adf) : "NO MEMORY FOR THE DISK";

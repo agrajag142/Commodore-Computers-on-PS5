@@ -306,12 +306,14 @@ static bool haveDiskExt = false, haveDiskCb = false;
 struct Model {
   const char *name, *kickName, *file;
   bool have;
+  const char *option; // (Amiberry's name for it; null: the same)
 };
 static Model models[] = {
-    {"A500", "1.3", "kick.rom", false},
-    {"A500+", "2.04", "kick204.rom", false},
-    {"A600", "2.05", "kick205.rom", false},
-    {"A1200", "3.1", "kick31.rom", false},
+    {"A500", "1.3", "kick.rom", false, nullptr},
+    {"A500+", "2.04", "kick204.rom", false, nullptr},
+    {"A600", "2.05", "kick205.rom", false, nullptr},
+    {"A1200", "3.1", "kick31.rom", false, nullptr},
+    {"A4000", "3.1", "kick31a4000.rom", false, "A4040"}, // (the 68040 one)
 };
 static const int kModels = sizeof(models) / sizeof(models[0]);
 static std::atomic<int> modelNow{0}, modelRequest{-1};
@@ -351,7 +353,8 @@ void amigaAddKickstart(const char *name, const uint8_t *data, size_t len) {
     bool a4000 = crc == 0xD6BAE334 || crc == 0x9E6AC152 || lower.find("4000") != std::string::npos;
     bool a1200 = crc == 0x1483A091 || crc == 0x6C9B07D2 || lower.find("1200") != std::string::npos;
     if (a1200) m = 3;
-    else if (!a4000 && !models[2].have) m = 2; // (3.x for the A500/A600/A2000: works in an A600)
+    else if (a4000) m = 4;
+    else if (!models[2].have) m = 2; // (3.x for the A500/A600/A2000: works in an A600)
   }
   if (m < 0) {
     logLine("PS5: %s: Kickstart %d.%d (CRC %08X), not used\n", name, ver, rev, (unsigned)crc);
@@ -401,9 +404,23 @@ static void saveModel() {
 static void saveHardDrive() {
   writeFile(std::string(kSystemDir) + "/harddrive.txt", (const uint8_t *)hdNow.data(), hdNow.size());
 }
-static void loadHardDrive() {
+static void loadHardDrive(const char *defaultPath) {
   FILE *f = fopen((std::string(kSystemDir) + "/harddrive.txt").c_str(), "r");
-  if (!f) return;
+  if (!f) { // (none chosen yet: default.hdf, if the app has one)
+    if (defaultPath && defaultPath[0]) hdNow = writablePath(defaultPath);
+    f = nullptr;
+  }
+  if (!f) {
+    struct stat st;
+    std::string trying = std::string(kSystemDir) + "/harddrive.try";
+    if (!hdNow.empty() && stat(trying.c_str(), &st) == 0) {
+      logLine("PS5: %s took the app down last time: left out\n", hdNow.c_str());
+      hdNow.clear();
+      saveHardDrive();
+      unlink(trying.c_str());
+    }
+    return;
+  }
   char line[512] = {};
   fgets(line, sizeof line, f);
   fclose(f);
@@ -433,7 +450,10 @@ static void loadModel() {
 }
 
 static const char *optionValue(const char *key) {
-  if (!strcmp(key, "amiberry_model")) return models[modelNow.load()].name;
+  if (!strcmp(key, "amiberry_model")) {
+    const Model &md = models[modelNow.load()];
+    return md.option ? md.option : md.name;
+  }
   if (!strcmp(key, "amiberry_kickstart")) return models[modelNow.load()].file;
   if (!strcmp(key, "amiberry_audio_rate")) return "48000";
   if (!strcmp(key, "amiberry_port0_device")) return "mouse";
@@ -641,7 +661,6 @@ void amigaRunFrame(AmigaFrameTimes *times) {
     // Amiberry's data folder (it looks for one before anything else)
     setenv("AMIBERRY_DATA_DIR", kSystemDir, 1);
     loadModel();
-    loadHardDrive();
     for (int i = 0; i < kModels && !models[modelNow.load()].have; i++)
       if (models[i].have) modelNow.store(i);
     coreStart();
@@ -720,3 +739,14 @@ void amigaRunFrame(AmigaFrameTimes *times) {
     times->totalUs = times->cpuUs = (uint32_t)((amigaMicros ? amigaMicros() : 0) - t0);
   }
 }
+
+// At start-up, before the Amiga runs: the hard drive it boots from (the
+// one chosen last time, else default.hdf); the front end then puts no
+// floppy in if there is one
+void amigaStartHardDrive(const char *defaultPath) {
+  mkdirs();
+  loadHardDrive(defaultPath);
+  logLine("PS5: hard drive at start: %s\n", hdNow.empty() ? "none" : hdNow.c_str());
+}
+void amigaNoStartDisk() { firstDisk.clear(); }
+
