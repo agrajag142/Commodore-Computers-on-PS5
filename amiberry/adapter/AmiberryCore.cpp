@@ -251,7 +251,7 @@ static unsigned rawToRetrok(uint8_t raw) {
   case 0x58: return RETROK_F9; case 0x59: return RETROK_F10;
   case 0x5a: return RETROK_KP_EQUALS; case 0x5b: return RETROK_KP_DIVIDE; // (the keypad's ( ) as Amiberry maps them)
   case 0x5c: return RETROK_KP_DIVIDE; case 0x5d: return RETROK_KP_MULTIPLY; case 0x5e: return RETROK_KP_PLUS;
-  case 0x5f: return RETROK_PAGEUP; // HELP (Amiberry's default: Page Up / End)
+  case 0x5f: return RETROK_PAGEDOWN; // HELP (Amiberry's: Page Down; Page Up is its freeze button)
   case 0x60: return RETROK_LSHIFT; case 0x61: return RETROK_RSHIFT; case 0x62: return RETROK_CAPSLOCK;
   case 0x63: return RETROK_LCTRL; case 0x64: return RETROK_LALT; case 0x65: return RETROK_RALT;
   case 0x66: return RETROK_LSUPER; case 0x67: return RETROK_RSUPER;
@@ -272,7 +272,13 @@ void cia_kbd_vsync(void) {}
 // ------------------------------------------------------------ the drive light
 static std::atomic<int> driveLight{0};
 static void RETRO_CALLCONV setLed(int led, int state) {
-  if (led == 1) driveLight.store(state, std::memory_order_relaxed); // RETRO_LED_DRIVE0 (0 is power)
+  // (Amiberry's: 0 power, 1 any drive, 2 hard drive/CD, 3 DF0:)
+  static int logged;
+  if (logged < 40) {
+    logged++;
+    logLine("PS5: LED %d %d\n", led, state);
+  }
+  if (led == 3) driveLight.store(state, std::memory_order_relaxed);
 }
 int drive_led(void) { return driveLight.load(std::memory_order_relaxed); }
 
@@ -408,12 +414,14 @@ static void insertDisk(const std::string &path) {
   retro_game_info info{};
   info.path = path.c_str();
   if (haveDiskExt) {
-    diskExt.set_eject_state(true);
+    bool e = diskExt.set_eject_state(true);
     unsigned n = diskExt.get_num_images();
-    diskExt.add_image_index();
-    diskExt.replace_image_index(n, &info);
-    diskExt.set_image_index(n);
-    diskExt.set_eject_state(false);
+    bool a = diskExt.add_image_index();
+    bool r = diskExt.replace_image_index(n, &info);
+    bool i = diskExt.set_image_index(n);
+    bool c = diskExt.set_eject_state(false);
+    logLine("PS5: disk %s in as image %u (eject %d add %d replace %d index %d close %d, now %u)\n", path.c_str(), n, e,
+            a, r, i, c, diskExt.get_image_index());
   } else if (haveDiskCb) {
     diskCb.set_eject_state(true);
     unsigned n = diskCb.get_num_images();
@@ -478,11 +486,27 @@ void amigaRunFrame(AmigaFrameTimes *times) {
   }
   if (!loaded) return;
   // the screen thread's requests
-  if (resetRequest.exchange(false)) retro_reset();
+  if (resetRequest.exchange(false)) {
+    logLine("PS5: reset\n");
+    retro_reset();
+  }
+  // A disk to boot: the reset first, the disk in a little later, as on a
+  // real Amiga (in at the reset itself, Amiberry lost it: the hand)
+  static int insertIn = 0;
   if (int d = diskRequest.load(std::memory_order_acquire)) {
-    insertDisk(pendingDiskPath);
-    if (d == 2) retro_reset();
-    diskRequest.store(0, std::memory_order_release);
+    if (insertIn == 0) {
+      if (d == 2) {
+        logLine("PS5: reset for %s\n", pendingDiskPath.c_str());
+        retro_reset();
+        insertIn = 25;
+      } else {
+        insertIn = 1;
+      }
+    }
+    if (--insertIn == 0) {
+      insertDisk(pendingDiskPath);
+      diskRequest.store(0, std::memory_order_release);
+    }
   }
   for (unsigned t = keyTail.load(std::memory_order_relaxed); t != keyHead.load(std::memory_order_acquire); t++) {
     uint8_t k = keyQueue[t % sizeof keyQueue];
