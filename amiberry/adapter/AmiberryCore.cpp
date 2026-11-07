@@ -493,7 +493,7 @@ bool amigaCoreInit(uint8_t *chip, uint8_t *slow, uint8_t *rom, const AmigaOutput
   (void)slow;
   out = o;
   kick = rom;
-  logLine("PS5: the front end is up (Kickstart %s)\n", rom ? "loaded" : "missing");
+  logLine("PS5: the front end is up (Kickstart %s), build " __DATE__ " " __TIME__ "\n", rom ? "loaded" : "missing");
   mkdirs();
   // the Kickstart as the front end loaded it (Amiga Forever's already decrypted)
   if (kick && !writeFile(std::string(kSystemDir) + "/kick.rom", kick, 262144)) {
