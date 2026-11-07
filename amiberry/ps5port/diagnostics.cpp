@@ -37,7 +37,7 @@ static void onTerminate() {
 // (its address in llvm-pie.elf turns them into functions: tools/symbolize)
 extern "C" int ps5portDiagnostics(void (*log)(const char *));
 
-static void logAddresses(const char *what, int sig, ucontext_t *uc) {
+[[maybe_unused]] static void logAddresses(const char *what, int sig, ucontext_t *uc) {
   if (!logFn) return;
   char line[160];
   uintptr_t ref = (uintptr_t)&ps5portDiagnostics;
@@ -82,10 +82,14 @@ static void onCrash(int sig, siginfo_t *info, void *ctx) {
   snprintf(line, sizeof(line), "PS5: crash: fault address %p\n", info ? info->si_addr : nullptr);
   if (logFn) logFn(line);
   dumpContext(ctx);
-  logAddresses("crash", sig, (ucontext_t *)ctx);
+  (void)sig;
   _exit(1);
 }
-static void onPoke(int sig, siginfo_t *, void *ctx) { logAddresses("still busy", sig, (ucontext_t *)ctx); }
+// (only that it happened: the PS5's register layout in ctx isn't known
+// here, and reading the stack through it took the app down)
+static void onPoke(int, siginfo_t *, void *) {
+  if (logFn) logFn("PS5: the emulator thread is still busy\n");
+}
 // The other signals that end an app by default: which one, and from where
 // (SIGSYS, a system call the PS5 doesn't have, and SIGPIPE are logged and
 // the call carries on with an error)
@@ -93,7 +97,7 @@ static void onOther(int sig, siginfo_t *info, void *ctx) {
   char line[96];
   snprintf(line, sizeof(line), "PS5: signal %d (code %d)\n", sig, info ? info->si_code : 0);
   if (logFn) logFn(line);
-  logAddresses("signal", sig, (ucontext_t *)ctx);
+  dumpContext(ctx);
   if (sig == SIGSYS || sig == SIGPIPE) return;
   _exit(3);
 }

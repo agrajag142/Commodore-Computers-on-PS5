@@ -7,9 +7,7 @@ src/audio.cpp
 src/sounddep/sound.cpp
 src/osdep/amiberry_gfx.cpp
 src/osdep/amiberry.cpp
-src/osdep/amiberry_input.cpp
 src/osdep/gfx_window.cpp
-src/inputdevice.cpp
 src/expansion.cpp
 src/memory.cpp
 src/devices.cpp
