@@ -410,6 +410,7 @@ static void insertDisk(const std::string &path) {
 static pthread_t emuThread;
 static std::atomic<int> framesDone{0};
 static void *watchdog(void *) {
+  logLine("PS5: watchdog running\n");
   int last = -1, pokes = 0;
   while (pokes < 6) {
     sleep(5);
@@ -469,7 +470,7 @@ void amigaRunFrame(AmigaFrameTimes *times) {
     keyTail.store(t + 1, std::memory_order_release);
   }
   static int frames;
-  if (frames < 3 || frames % 500 == 0) logLine("PS5: frame %d\n", frames);
+  if (frames < 10 || frames % 500 == 0) logLine("PS5: frame %d\n", frames);
   frames++;
   frameDX = mouseDX.exchange(0, std::memory_order_relaxed);
   frameDY = mouseDY.exchange(0, std::memory_order_relaxed);
