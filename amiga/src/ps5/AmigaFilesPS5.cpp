@@ -53,7 +53,7 @@ static std::vector<std::string> allNames() {
     fclose(f);
   }
   static const char *usual[] = {"kick.rom", "kick34005.A500", "kick13.rom", "amiga-os-130.rom", "rom.key",
-                                "default.adf", "df0.adf", "df1.adf", "disk1.adf", "disk2.adf",
+                                "default.adf", "df0.adf", "df1.adf", "disk1.adf", "disk2.adf", "default.hdf",
                                 // (the later Kickstarts: the usual names, Amiga Forever's among them)
                                 "kick20.rom", "kick204.rom", "kick205.rom", "kick31.rom", "kick37175.A500",
                                 "kick37350.A600", "kick40063.A600", "kick40068.A1200", "kick39106.A1200",

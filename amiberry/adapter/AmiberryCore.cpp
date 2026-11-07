@@ -401,33 +401,32 @@ static void saveModel() {
   std::string m = models[modelNow.load()].name;
   writeFile(std::string(kSystemDir) + "/model.txt", (const uint8_t *)m.data(), m.size());
 }
+// (harddrive.txt: the whole path, or "none" when none was chosen; empty or
+// missing: default.hdf, if the app has one)
 static void saveHardDrive() {
-  writeFile(std::string(kSystemDir) + "/harddrive.txt", (const uint8_t *)hdNow.data(), hdNow.size());
+  std::string v = hdNow.empty() ? "none" : hdNow;
+  writeFile(std::string(kSystemDir) + "/harddrive.txt", (const uint8_t *)v.data(), v.size());
 }
 static void loadHardDrive(const char *defaultPath) {
+  logLine("PS5: default.hdf: %s\n", defaultPath && defaultPath[0] ? defaultPath : "not in the app");
   FILE *f = fopen((std::string(kSystemDir) + "/harddrive.txt").c_str(), "r");
-  if (!f) { // (none chosen yet: default.hdf, if the app has one)
+  char saved[512] = {};
+  if (f) {
+    fgets(saved, sizeof saved, f);
+    fclose(f);
+  }
+  if (!saved[0]) { // (none chosen yet: default.hdf, if the app has one)
     if (defaultPath && defaultPath[0]) hdNow = writablePath(defaultPath);
-    f = nullptr;
-  }
-  if (!f) {
-    struct stat st;
-    std::string trying = std::string(kSystemDir) + "/harddrive.try";
-    if (!hdNow.empty() && stat(trying.c_str(), &st) == 0) {
-      logLine("PS5: %s took the app down last time: left out\n", hdNow.c_str());
-      hdNow.clear();
-      saveHardDrive();
-      unlink(trying.c_str());
-    }
+  } else if (!strcmp(saved, "none")) {
     return;
+  } else {
+    struct stat st;
+    if (stat(saved, &st) == 0) hdNow = saved;
+    else if (defaultPath && defaultPath[0]) hdNow = writablePath(defaultPath); // (the chosen one gone)
   }
-  char line[512] = {};
-  fgets(line, sizeof line, f);
-  fclose(f);
-  struct stat st;
-  if (line[0] && stat(line, &st) == 0) hdNow = line;
   // (the app went down last time with it in, before it had run 10 seconds:
   // started without it, so it doesn't go down again)
+  struct stat st;
   std::string trying = std::string(kSystemDir) + "/harddrive.try";
   if (!hdNow.empty() && stat(trying.c_str(), &st) == 0) {
     logLine("PS5: %s took the app down last time: left out\n", hdNow.c_str());
