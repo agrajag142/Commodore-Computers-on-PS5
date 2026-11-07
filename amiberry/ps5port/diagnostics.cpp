@@ -136,6 +136,48 @@ extern "C" [[noreturn]] void __wrap_abort(void) {
   __real_abort();
 }
 
+// Memory mapping, wrapped at the link: every call and its result, in the
+// log (the app dies in frame 2, when Amiberry remaps the Amiga's memory)
+#include <sys/mman.h>
+extern "C" void *__real_mmap(void *, size_t, int, int, int, off_t);
+extern "C" int __real_munmap(void *, size_t);
+extern "C" int __real_mprotect(void *, size_t, int);
+extern "C" int __real_madvise(void *, size_t, int);
+static void logMem(const char *what, void *addr, size_t len, int a, int b, long r, void *from) {
+  if (!logFn) return;
+  char line[200];
+  snprintf(line, sizeof(line), "PS5: %s(%p, 0x%zx, %d, 0x%x) = %lx (errno %d) from ref%+lld\n", what, addr, len, a, b, r,
+           errno, (long long)((uintptr_t)from - (uintptr_t)&ps5portDiagnostics));
+  logFn(line);
+}
+extern "C" void *__wrap_mmap(void *addr, size_t len, int prot, int flags, int fd, off_t off) {
+  void *from = __builtin_return_address(0);
+  if (logFn) logMem("mmap before", addr, len, prot, flags, 0, from);
+  void *r = __real_mmap(addr, len, prot, flags, fd, off);
+  logMem("mmap", addr, len, prot, flags, (long)r, from);
+  return r;
+}
+extern "C" int __wrap_munmap(void *addr, size_t len) {
+  void *from = __builtin_return_address(0);
+  logMem("munmap before", addr, len, 0, 0, 0, from);
+  int r = __real_munmap(addr, len);
+  logMem("munmap", addr, len, 0, 0, r, from);
+  return r;
+}
+extern "C" int __wrap_mprotect(void *addr, size_t len, int prot) {
+  void *from = __builtin_return_address(0);
+  logMem("mprotect before", addr, len, prot, 0, 0, from);
+  int r = __real_mprotect(addr, len, prot);
+  logMem("mprotect", addr, len, prot, 0, r, from);
+  return r;
+}
+extern "C" int __wrap_madvise(void *addr, size_t len, int adv) {
+  void *from = __builtin_return_address(0);
+  int r = __real_madvise(addr, len, adv);
+  logMem("madvise", addr, len, adv, 0, r, from);
+  return r;
+}
+
 // 1: an exception thrown and caught here (the unwinder works)
 extern "C" int ps5portDiagnostics(void (*log)(const char *)) {
   logFn = log;

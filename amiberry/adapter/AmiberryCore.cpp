@@ -25,6 +25,7 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -53,32 +54,38 @@ static bool writeFile(const std::string &path, const uint8_t *data, size_t n) {
 }
 
 // ------------------------------------------------------------ the log
-static FILE *logFile = nullptr;
-static void logLine(const char *fmt, ...) {
-  if (!logFile) {
+// (written with write(), no stdio lock: a thread stuck anywhere can't stop
+//  another from logging)
+static int logFd = -2;
+static void logWrite(const char *s, size_t n) {
+  if (logFd == -2) {
     // beside the app, where FTP reaches it; else the app's own storage
-    logFile = fopen("/data/homebrew/PPSA99906/amiberry.log", "w");
-    if (!logFile) {
+    logFd = open("/data/homebrew/PPSA99906/amiberry.log", O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (logFd < 0) {
       mkdirs();
-      logFile = fopen("/download0/amiberry/amiberry.log", "w");
+      logFd = open("/download0/amiberry/amiberry.log", O_WRONLY | O_CREAT | O_TRUNC, 0666);
     }
-    if (!logFile) return;
   }
+  if (logFd >= 0 && n) write(logFd, s, n);
+}
+static void logV(const char *fmt, va_list a) {
+  char line[2048];
+  int n = vsnprintf(line, sizeof line, fmt, a);
+  if (n < 0) return;
+  logWrite(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+}
+static void logLine(const char *fmt, ...) {
   va_list a;
   va_start(a, fmt);
-  vfprintf(logFile, fmt, a);
+  logV(fmt, a);
   va_end(a);
-  fflush(logFile);
 }
 static void RETRO_CALLCONV coreLog(enum retro_log_level level, const char *fmt, ...) {
   if (level < RETRO_LOG_INFO) return;
-  if (!logFile) logLine("");
-  if (!logFile) return;
   va_list a;
   va_start(a, fmt);
-  vfprintf(logFile, fmt, a);
+  logV(fmt, a);
   va_end(a);
-  fflush(logFile);
 }
 
 // ------------------------------------------------------------ the picture
@@ -415,6 +422,7 @@ static void *watchdog(void *) {
   while (pokes < 6) {
     sleep(5);
     int f = framesDone.load();
+    logLine("PS5: watchdog: %d frames\n", f);
     if (f == last && !paused.load()) {
       logLine("PS5: no frame for 5 seconds (at frame %d)\n", f);
       ps5portPoke(emuThread);

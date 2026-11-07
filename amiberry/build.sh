@@ -185,7 +185,7 @@ libs="amiberry/lib/libamiberry.a amiberry/lib/libps5port.a amiberry/lib/libz.a a
 vars=(APP_SOURCE_DIR=amiberry/src APP_PARAM=amiberry/sce_sys/param.json
       APP_SCE_SYS=amiberry/sce_sys APP_ASSETS=amiberry/assets
       APP_DEFINITIONS="ARDUINO AMIBERRY" APP_INCLUDE_PATHS="amiberry/src/stubs amiberry/src/core amiberry/src/adapter"
-      APP_STATIC_ARCHIVES="$libs" APP_WRAP_SYMBOLS="__cxa_throw stat lstat open fopen mkdir pthread_create exit _exit abort")
+      APP_STATIC_ARCHIVES="$libs" APP_WRAP_SYMBOLS="__cxa_throw stat lstat open fopen mkdir pthread_create exit _exit abort mmap munmap mprotect madvise")
 if [[ -n $deploy_host ]]; then
     make -C "$kit" "${vars[@]}" deploy PS5_HOST="$deploy_host"
 else
