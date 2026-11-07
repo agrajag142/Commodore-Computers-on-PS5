@@ -352,6 +352,23 @@ extern "C" void ps5portSelfTest(void) {
     co_switch(f);
     co_delete(f);
   }
+  // (how much memory one mapping can have, read-write and reserved-only)
+  for (int prot : {PROT_READ | PROT_WRITE, PROT_NONE}) {
+    size_t lo = 0, hi = (size_t)4096 << 20;
+    while (hi - lo > ((size_t)1 << 20)) {
+      size_t mid = (lo + hi) / 2 & ~(size_t)0xfffff;
+      void *p = __real_mmap(nullptr, mid, prot, MAP_PRIVATE | MAP_ANON, -1, 0);
+      if (p != MAP_FAILED) {
+        __real_munmap(p, mid);
+        lo = mid;
+      } else {
+        hi = mid;
+      }
+    }
+    char line[96];
+    snprintf(line, sizeof line, "PS5: largest %s mapping: %zu MB\n", prot ? "read-write" : "reserved", lo >> 20);
+    if (logFn) logFn(line);
+  }
   if (logFn) logFn("PS5: self-test done\n");
   (void)testWhat;
 }

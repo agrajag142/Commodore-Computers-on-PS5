@@ -1,0 +1,17 @@
+--- a/src/osdep/libretro/gfx_platform_internal.h	2026-11-07 13:30:20.184498135 +1030
++++ b/src/osdep/libretro/gfx_platform_internal.h	2026-11-07 17:52:13.037380732 +1030
+@@ -321,8 +321,14 @@
+ 			LIBRETRO_DRAWBUFFER_WIDTH, LIBRETRO_DRAWBUFFER_HEIGHT);
+ 
+ 		libretro_allocsoftbuffer(mon->monitor_id, _T("monemu"), &avidinfo->tempbuffer, mon->currentmode.flags,
++#if defined(__PROSPERO__) || defined(__FreeBSD__)
++			// PS5: memory is short (2048x2048, doubled for margins, is 64 MB)
++			mon->currentmode.amiga_width > 1024 ? mon->currentmode.amiga_width : 1024,
++			mon->currentmode.amiga_height > 1024 ? mon->currentmode.amiga_height : 1024);
++#else
+ 			mon->currentmode.amiga_width > 2048 ? mon->currentmode.amiga_width : 2048,
+ 			mon->currentmode.amiga_height > 2048 ? mon->currentmode.amiga_height : 2048);
++#endif
+ 	}
+ 
+ 	avidinfo->outbuffer = &avidinfo->drawbuffer;
