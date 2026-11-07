@@ -104,7 +104,11 @@ static void RETRO_CALLCONV videoRefresh(const void *data, unsigned w, unsigned h
   // the middle.
   int sx = w <= 400 ? 2 : 1, sy = h <= 300 ? 2 : 1;
   int fw = (int)w * sx, fh = (int)h * sy;
-  int cropX = fw > 640 ? (fw - 640) / 2 : 0, cropY = fh > 512 ? (fh - 512) / 2 : 0;
+  // (the Amiga's standard screen sits right of the middle of Amiberry's
+  // overscan picture: Workbench 1.3, 640 wide, was 20 pixels right on the PS5)
+  const int kShiftX = 20;
+  int cropX = fw > 640 ? (fw - 640) / 2 + kShiftX : 0, cropY = fh > 512 ? (fh - 512) / 2 : 0;
+  if (cropX > fw - 640) cropX = fw > 640 ? fw - 640 : 0;
   int padX = fw < 640 ? (640 - fw) / 2 : 0, padY = fh < 512 ? (512 - fh) / 2 : 0;
   for (int y = 0; y < 512; y++) {
     uint16_t *dst = out.fb + (out.y + y) * out.stride + out.x;
