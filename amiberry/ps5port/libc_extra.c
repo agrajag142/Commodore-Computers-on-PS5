@@ -315,3 +315,66 @@ time_t timegm(struct tm *t) {
   long days = era * 146097 + doe - 719468;
   return (time_t)(days * 86400 + t->tm_hour * 3600 + t->tm_min * 60 + t->tm_sec);
 }
+
+/* ---------------------------------------------------------------- not for apps
+ * The PS5 has these only in libraries an app isn't given (libkernel_sys,
+ * libScePosixForWebKit): importing one stops the app from starting at all.
+ * Defined here instead, from what an app may use. */
+int open(const char *, int, ...);
+int unlink(const char *);
+int rmdir(const char *);
+
+static uint32_t rngState;
+uint32_t arc4random(void) {
+  if (!rngState) rngState = (uint32_t)time(NULL) | 1;
+  rngState ^= rngState << 13;
+  rngState ^= rngState >> 17;
+  rngState ^= rngState << 5;
+  return rngState;
+}
+
+int getaddrinfo(const char *n, const char *s, const void *h, void **res) {
+  (void)n; (void)s; (void)h;
+  if (res) *res = NULL;
+  return 4; /* EAI_FAIL */
+}
+void freeaddrinfo(void *a) { (void)a; }
+void *gethostbyname(const char *n) { (void)n; hErrno = 1; return NULL; }
+void *getservbyname(const char *n, const char *p) { (void)n; (void)p; return NULL; }
+
+int mkstemp(char *tmpl) {
+  static unsigned n;
+  size_t k = strlen(tmpl);
+  if (k < 6) { errno = EINVAL; return -1; }
+  for (int tries = 0; tries < 100; tries++) {
+    unsigned v = ++n * 2654435761u ^ arc4random();
+    for (int i = 0; i < 6; i++) tmpl[k - 6 + i] = "abcdefghijklmnopqrstuvwxyz0123456789"[(v >> (i * 5)) % 36];
+    int fd = open(tmpl, 0x0002 | 0x0200 | 0x0800, 0600); /* O_RDWR | O_CREAT | O_EXCL */
+    if (fd >= 0 || errno != EEXIST) return fd;
+  }
+  return -1;
+}
+
+int chown(const char *p, unsigned u, unsigned g) { (void)p; (void)u; (void)g; return 0; }
+int fchown(int fd, unsigned u, unsigned g) { (void)fd; (void)u; (void)g; return 0; }
+int fchmodat(int d, const char *p, unsigned m, int f) { (void)d; (void)p; (void)m; (void)f; return 0; }
+int fork(void) { errno = ENOSYS; return -1; }
+int setsid(void) { errno = ENOSYS; return -1; }
+int link(const char *a, const char *b) { (void)a; (void)b; errno = ENOSYS; return -1; }
+int symlink(const char *a, const char *b) { (void)a; (void)b; errno = ENOSYS; return -1; }
+long readlink(const char *p, char *b, size_t n) { (void)p; (void)b; (void)n; errno = EINVAL; return -1; }
+long pathconf(const char *p, int name) { (void)p; return name == 4 ? 255 : 1024; } /* _PC_NAME_MAX, else PATH_MAX-ish */
+
+#define AT_FDCWD_ (-100)
+int openat(int dir, const char *p, int flags, ...) {
+  va_list a;
+  va_start(a, flags);
+  int mode = va_arg(a, int);
+  va_end(a);
+  if (dir != AT_FDCWD_ && p[0] != '/') { errno = ENOSYS; return -1; }
+  return open(p, flags, mode);
+}
+int unlinkat(int dir, const char *p, int flags) {
+  if (dir != AT_FDCWD_ && p[0] != '/') { errno = ENOSYS; return -1; }
+  return (flags & 0x0800) ? rmdir(p) : unlink(p); /* AT_REMOVEDIR */
+}

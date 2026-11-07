@@ -370,6 +370,7 @@ bool amigaCoreInit(uint8_t *chip, uint8_t *slow, uint8_t *rom, const AmigaOutput
   (void)slow;
   out = o;
   kick = rom;
+  logLine("PS5: the front end is up (Kickstart %s)\n", rom ? "loaded" : "missing");
   mkdirs();
   // the Kickstart as the front end loaded it (Amiga Forever's already decrypted)
   if (kick && !writeFile(std::string(kSystemDir) + "/kick.rom", kick, 262144)) {
@@ -410,11 +411,14 @@ void amigaRunFrame(AmigaFrameTimes *times) {
     retro_set_audio_sample_batch(audioBatch);
     retro_set_input_poll(inputPoll);
     retro_set_input_state(inputState);
+    logLine("PS5: retro_init...\n");
     retro_init();
+    logLine("PS5: retro_init done\n");
     retro_set_controller_port_device(0, RETRO_DEVICE_MOUSE);
     retro_set_controller_port_device(1, RETRO_DEVICE_JOYPAD);
     retro_game_info info{};
     info.path = firstDisk.empty() ? nullptr : firstDisk.c_str();
+    logLine("PS5: retro_load_game...\n");
     loaded = retro_load_game(firstDisk.empty() ? nullptr : &info);
     logLine("PS5: retro_load_game(%s): %s\n", firstDisk.empty() ? "no disk" : firstDisk.c_str(), loaded ? "ok" : "FAILED");
   }
@@ -432,6 +436,9 @@ void amigaRunFrame(AmigaFrameTimes *times) {
     if (coreKeyboard && code != RETROK_UNKNOWN) coreKeyboard(!(k & 0x80), code, 0, 0);
     keyTail.store(t + 1, std::memory_order_release);
   }
+  static int frames;
+  if (frames < 3 || frames % 500 == 0) logLine("PS5: frame %d\n", frames);
+  frames++;
   frameDX = mouseDX.exchange(0, std::memory_order_relaxed);
   frameDY = mouseDY.exchange(0, std::memory_order_relaxed);
   retro_run();
