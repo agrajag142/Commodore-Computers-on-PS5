@@ -13,6 +13,7 @@
 #include <string>
 
 static void (*logFn)(const char *) = nullptr;
+static bool ownHandlersSet = false; // (our crash handlers are in: Amiberry's replacements are refused)
 
 static void onTerminate() {
   if (logFn) {
@@ -61,11 +62,26 @@ static void logAddresses(const char *what, int sig, ucontext_t *uc) {
 }
 
 static volatile int crashing = 0;
+static void dumpContext(void *ctx) {
+  if (!logFn || !ctx) return;
+  char line[64];
+  uintptr_t ref = (uintptr_t)&ps5portDiagnostics;
+  logFn("PS5: context words (ref+offset where it looks like code):");
+  const uintptr_t *w = (const uintptr_t *)ctx;
+  for (int i = 0; i < 64; i++) {
+    long long d = (long long)(w[i] - ref);
+    if (d > -(64ll << 20) && d < (64ll << 20)) snprintf(line, sizeof line, " [%d]ref%+lld", i, d);
+    else snprintf(line, sizeof line, " [%d]%lx", i, (unsigned long)w[i]);
+    logFn(line);
+  }
+  logFn("\n");
+}
 static void onCrash(int sig, siginfo_t *info, void *ctx) {
   if (crashing++) _exit(2); // (a crash while reporting one)
   char line[96];
   snprintf(line, sizeof(line), "PS5: crash: fault address %p\n", info ? info->si_addr : nullptr);
   if (logFn) logFn(line);
+  dumpContext(ctx);
   logAddresses("crash", sig, (ucontext_t *)ctx);
   _exit(1);
 }
@@ -83,11 +99,35 @@ extern "C" void ps5portWatch(void) {
   a.sa_flags = SA_SIGINFO | SA_ONSTACK;
   sigemptyset(&a.sa_mask);
   for (int s : {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT}) sigaction(s, &a, nullptr);
+  ownHandlersSet = true;
   a.sa_sigaction = onPoke;
   a.sa_flags = SA_SIGINFO;
   sigaction(SIGUSR2, &a, nullptr);
 }
 extern "C" void ps5portPoke(pthread_t t) { pthread_kill(t, SIGUSR2); }
+
+// Amiberry installs its own handlers for these (for its JIT, which this
+// build doesn't have): ours stay, so a crash is reported. Wrapped at the link.
+extern "C" int __real_sigaction(int, const struct sigaction *, struct sigaction *);
+extern "C" void (*__real_signal(int, void (*)(int)))(int);
+extern "C" void (*__wrap_signal(int sig, void (*fn)(int)))(int) {
+  if (ownHandlersSet && (sig == SIGSEGV || sig == SIGBUS || sig == SIGILL || sig == SIGFPE || sig == SIGABRT)) {
+    if (logFn) logFn("PS5: kept our handler (Amiberry called signal())\n");
+    return SIG_DFL;
+  }
+  return __real_signal(sig, fn);
+}
+extern "C" int __wrap_sigaction(int sig, const struct sigaction *act, struct sigaction *old) {
+  if (ownHandlersSet && act && (sig == SIGSEGV || sig == SIGBUS || sig == SIGILL || sig == SIGFPE || sig == SIGABRT)) {
+    if (logFn) {
+      char line[96];
+      snprintf(line, sizeof line, "PS5: kept our handler for signal %d (Amiberry asked to replace it)\n", sig);
+      logFn(line);
+    }
+    return __real_sigaction(sig, nullptr, old);
+  }
+  return __real_sigaction(sig, act, old);
+}
 
 // Every C++ exception, as it is thrown (the link wraps __cxa_throw): its type,
 // its message and who threw it, into the log
