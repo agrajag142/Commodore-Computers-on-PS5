@@ -49,6 +49,7 @@ void amigaSetModel(int i);
 // restarts with it
 void amigaSetHardDrive(const char *path);
 const char *amigaHardDrive();
+int hd_led(void); // (the hard drive's light)
 static const char *modelLabel() { return amigaModelName(amigaModel()) + 1; } // (A1200: 1200)
 #else
 static const char *modelLabel() { return "500"; }
@@ -1521,29 +1522,49 @@ static void drawSides() {
 }
 
 // the disk in the drive and the speed, under the help on the left
+// a light as on the A500's case: green while on
+static void drawLed(int lx, int y, bool on) {
+  fillRect(lx, y, 44, 20, on ? rgb(0x10, 0x40, 0x10) : rgb(0x0c, 0x18, 0x0c));
+  fillRect(lx + 3, y + 3, 38, 14, on ? rgb(0x30, 0xff, 0x40) : rgb(0x1c, 0x34, 0x1c));
+  if (on) fillRect(lx + 6, y + 5, 14, 4, rgb(0xc0, 0xff, 0xc8)); // (a shine)
+}
+
 static void drawStatus() {
-  static char shown[200] = "";
-  char now[200];
+  static char shown[300] = "";
+  char now[300];
   bool led = running && drive_led();
-  snprintf(now, sizeof(now), "%s|%d|%s|%d", diskInDrive.c_str(), emuFps.load(), status, led);
+#ifdef AMIBERRY
+  std::string hd = hardDriveNow();
+  bool hdLed = running && !hd.empty() && hd_led();
+#else
+  std::string hd;
+  bool hdLed = false;
+#endif
+  snprintf(now, sizeof(now), "%s|%d|%s|%d|%s|%d", diskInDrive.c_str(), emuFps.load(), status, led, hd.c_str(), hdLed);
   if (strcmp(now, shown) == 0) return;
   snprintf(shown, sizeof(shown), "%s", now);
   fillRect(0, 900, 320, 180, kSideBg);
   text(28, 910, "DF0:", 2, kDim);
-  // the drive light, as on the A500's case: green while the motor turns
-  int lx = 28 + textWidth("DF0:", 2) + 16;
-  fillRect(lx, 914, 44, 20, led ? rgb(0x10, 0x40, 0x10) : rgb(0x0c, 0x18, 0x0c));
-  fillRect(lx + 3, 917, 38, 14, led ? rgb(0x30, 0xff, 0x40) : rgb(0x1c, 0x34, 0x1c));
-  if (led) fillRect(lx + 6, 919, 14, 4, rgb(0xc0, 0xff, 0xc8)); // (a shine)
+  drawLed(28 + textWidth("DF0:", 2) + 16, 914, led);
   std::string d = diskInDrive.empty() ? "(empty)" : diskInDrive;
   if (d.size() > 34) d = d.substr(0, 34);
-  // the name in two lines of 17
-  text(28, 944, d.substr(0, 17).c_str(), 1, kText);
-  if (d.size() > 17) text(28, 964, d.substr(17).c_str(), 1, kText);
   char f[32];
   snprintf(f, sizeof(f), "%d FPS", emuFps.load());
-  text(28, 1000, f, 2, kDim);
-  if (status[0]) text(28, 1040, status, 1, kDim);
+  if (hd.empty()) {
+    // the name in two lines of 17
+    text(28, 944, d.substr(0, 17).c_str(), 1, kText);
+    if (d.size() > 17) text(28, 964, d.substr(17).c_str(), 1, kText);
+    text(28, 1000, f, 2, kDim);
+    if (status[0]) text(28, 1040, status, 1, kDim);
+  } else {
+    // and the hard drive under it, with its light
+    text(28, 940, d.substr(0, 17).c_str(), 1, kText);
+    text(28, 970, "DH0:", 2, kDim);
+    drawLed(28 + textWidth("DH0:", 2) + 16, 974, hdLed);
+    text(28, 1000, hd.substr(0, 17).c_str(), 1, kText);
+    text(28, 1028, f, 1, kDim);
+    if (status[0]) text(28, 1050, status, 1, kDim);
+  }
   fullCopies = 2;
 }
 

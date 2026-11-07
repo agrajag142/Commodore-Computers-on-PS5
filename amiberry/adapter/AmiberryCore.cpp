@@ -276,6 +276,7 @@ void cia_kbd_vsync(void) {}
 
 // ------------------------------------------------------------ the drive light
 static std::atomic<int> driveLight{0};
+static std::atomic<int> hdLightOn{0}, hdLightUntil{0}, hdLightFrame{0};
 static void RETRO_CALLCONV setLed(int led, int state) {
   // (Amiberry's: 0 power, 1 any drive, 2 hard drive/CD, 3 DF0:)
   static int logged;
@@ -284,8 +285,15 @@ static void RETRO_CALLCONV setLed(int led, int state) {
     logLine("PS5: LED %d %d\n", led, state);
   }
   if (led == 3) driveLight.store(state, std::memory_order_relaxed);
+  if (led == 7) { // (the hard drive: on for a moment at a time - held a little, to be seen)
+    if (state) hdLightUntil.store(hdLightFrame.load() + 6, std::memory_order_relaxed);
+    hdLightOn.store(state, std::memory_order_relaxed);
+  }
 }
 int drive_led(void) { return driveLight.load(std::memory_order_relaxed); }
+int hd_led(void) {
+  return hdLightOn.load(std::memory_order_relaxed) || hdLightFrame.load() < hdLightUntil.load(std::memory_order_relaxed);
+}
 
 // ------------------------------------------------------------ the environment
 static retro_disk_control_ext_callback diskExt{};
@@ -691,6 +699,7 @@ void amigaRunFrame(AmigaFrameTimes *times) {
     if (coreKeyboard && code != RETROK_UNKNOWN) coreKeyboard(!(k & 0x80), code, 0, 0);
     keyTail.store(t + 1, std::memory_order_release);
   }
+  hdLightFrame++;
   if (hdFrames >= 0 && ++hdFrames == 500) { // (10 seconds with it: it's fine)
     unlink((std::string(kSystemDir) + "/harddrive.try").c_str());
     hdFrames = -1;
