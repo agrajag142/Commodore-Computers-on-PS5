@@ -1,0 +1,16 @@
+diff --git a/src/include/uae/endian.h b/src/include/uae/endian.h
+index 09ea9a7..4f96139 100644
+--- a/src/include/uae/endian.h
++++ b/src/include/uae/endian.h
+@@ -38,6 +38,11 @@ static inline uint32_t le32toh_impl(uint32_t v)
+ #define le32toh le32toh_impl
+ #endif
+ 
++#elif defined(__PROSPERO__) || defined(__FreeBSD__)
++
++/* PS5 port: FreeBSD keeps these in sys/endian.h */
++#include <sys/endian.h>
++
+ #elif defined(__APPLE__)
+ 
+ /* OS X lacks endian.h, but has something similar */
