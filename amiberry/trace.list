@@ -1,0 +1,18 @@
+# Core sources built with function tracing (see build.sh): the functions
+# they enter in frame 2 go into the log. Empty: no tracing.
+libretro/libretro.cpp
+src/main.cpp
+src/newcpu.cpp
+src/audio.cpp
+src/sounddep/sound.cpp
+src/osdep/amiberry_gfx.cpp
+src/osdep/amiberry.cpp
+src/osdep/amiberry_input.cpp
+src/osdep/gfx_window.cpp
+src/inputdevice.cpp
+src/expansion.cpp
+src/memory.cpp
+src/devices.cpp
+src/savestate.cpp
+src/rommgr.cpp
+src/osdep/libretro/writelog.cpp

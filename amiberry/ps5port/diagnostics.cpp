@@ -86,6 +86,17 @@ static void onCrash(int sig, siginfo_t *info, void *ctx) {
   _exit(1);
 }
 static void onPoke(int sig, siginfo_t *, void *ctx) { logAddresses("still busy", sig, (ucontext_t *)ctx); }
+// The other signals that end an app by default: which one, and from where
+// (SIGSYS, a system call the PS5 doesn't have, and SIGPIPE are logged and
+// the call carries on with an error)
+static void onOther(int sig, siginfo_t *info, void *ctx) {
+  char line[96];
+  snprintf(line, sizeof(line), "PS5: signal %d (code %d)\n", sig, info ? info->si_code : 0);
+  if (logFn) logFn(line);
+  logAddresses("signal", sig, (ucontext_t *)ctx);
+  if (sig == SIGSYS || sig == SIGPIPE) return;
+  _exit(3);
+}
 
 // The crash signals logged; SIGUSR2 to a thread: where it is (for hangs)
 extern "C" void ps5portWatch(void) {
@@ -100,6 +111,10 @@ extern "C" void ps5portWatch(void) {
   sigemptyset(&a.sa_mask);
   for (int s : {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT}) sigaction(s, &a, nullptr);
   ownHandlersSet = true;
+  a.sa_sigaction = onOther;
+  for (int s : {SIGSYS, SIGPIPE, SIGTRAP, SIGEMT, SIGXCPU, SIGXFSZ, SIGTERM, SIGHUP, SIGINT, SIGQUIT, SIGALRM,
+                SIGVTALRM, SIGPROF, SIGUSR1})
+    sigaction(s, &a, nullptr);
   a.sa_sigaction = onPoke;
   a.sa_flags = SA_SIGINFO;
   sigaction(SIGUSR2, &a, nullptr);
@@ -238,4 +253,34 @@ extern "C" int ps5portDiagnostics(void (*log)(const char *)) {
     log("\n");
   }
   return ok;
+}
+
+// Function tracing (the core files built with -finstrument-functions): while
+// on, every function the emulator thread enters, as ref+offset, into the log
+// (the same function twice in a row: once)
+static volatile int traceOn = 0;
+static pthread_t traceThread;
+static int traceCount = 0;
+static uintptr_t traceLast = 0;
+extern "C" __attribute__((no_instrument_function)) void ps5portTrace(int on) {
+  traceThread = pthread_self();
+  traceLast = 0;
+  traceOn = on;
+  if (logFn) logFn(on ? "PS5: trace on\n" : "PS5: trace off\n");
+}
+extern "C" __attribute__((no_instrument_function)) void __cyg_profile_func_enter(void *fn, void *) {
+  if (!traceOn || !logFn || (uintptr_t)fn == traceLast || !pthread_equal(pthread_self(), traceThread)) return;
+  traceLast = (uintptr_t)fn;
+  if (++traceCount > 400000) { traceOn = 0; logFn("PS5: trace full\n"); return; }
+  char line[32];
+  snprintf(line, sizeof line, "T%llx\n", (long long)((uintptr_t)fn - (uintptr_t)&ps5portDiagnostics));
+  logFn(line);
+}
+extern "C" __attribute__((no_instrument_function)) void __cyg_profile_func_exit(void *, void *) {}
+extern "C" void ps5portLogThread(void *fn, int result) {
+  if (!logFn) return;
+  char line[96];
+  snprintf(line, sizeof line, "PS5: thread ref%+lld started (%d)\n",
+           (long long)((uintptr_t)fn - (uintptr_t)&ps5portDiagnostics), result);
+  logFn(line);
 }

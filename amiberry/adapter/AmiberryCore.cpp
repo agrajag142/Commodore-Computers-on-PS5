@@ -36,6 +36,7 @@ int64_t (*amigaMicros)() = nullptr;
 extern "C" int ps5portDiagnostics(void (*log)(const char *)); // (ps5port/diagnostics.cpp)
 extern "C" void ps5portWatch(void);
 extern "C" void ps5portPoke(pthread_t t);
+extern "C" void ps5portTrace(int on); // (functions entered, into the log: frame 2, where the PS5 build dies)
 
 // ------------------------------------------------------------ where files go
 static const char *kSystemDir = "/download0/amiberry"; // the app's own storage (writable)
@@ -488,7 +489,9 @@ void amigaRunFrame(AmigaFrameTimes *times) {
   frames++;
   frameDX = mouseDX.exchange(0, std::memory_order_relaxed);
   frameDY = mouseDY.exchange(0, std::memory_order_relaxed);
+  if (traceFrames == 1) ps5portTrace(1);
   retro_run();
+  if (traceFrames == 1) ps5portTrace(0);
   if (traceFrames < 4) logLine("PS5: retro_run returned\n");
   traceFrames++;
   framesDone++;

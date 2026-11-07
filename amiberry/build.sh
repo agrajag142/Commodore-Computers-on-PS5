@@ -82,15 +82,31 @@ fi
 work=$home/amiberry-work
 mkdir -p "$work/bin" "$work/lib"
 clang_c=$(command -v clang-18); clang_cxx=$(command -v clang++-18)
+# (trace.list: core sources built so that the functions they enter are
+# logged, for finding where the PS5 build dies; the compilers read the set
+# from $work/trace-re)
+trace_check='trace=; re=$(cat "'$work'/trace-re" 2>/dev/null); if [ -n "$re" ]; then for a in "$@"; do case $a in *.c|*.cpp) echo "$a" | grep -Eq "($re)\$" && trace=-finstrument-functions-after-inlining ;; esac; done; fi'
 cat > "$work/bin/ps5cc" <<EOF
 #!/bin/sh
-PS5_PAYLOAD_SDK=$sdk PS5_CLANG=$clang_c exec sh $kit/tooling/prospero-clang18 -I$here/ps5port/include "\$@"
+$trace_check
+PS5_PAYLOAD_SDK=$sdk PS5_CLANG=$clang_c exec sh $kit/tooling/prospero-clang18 -I$here/ps5port/include \$trace "\$@"
 EOF
 cat > "$work/bin/ps5cxx" <<EOF
 #!/bin/sh
-PS5_PAYLOAD_SDK=$sdk PS5_CLANG=$clang_cxx exec sh $kit/tooling/prospero-clang18 -I$here/ps5port/include -fexceptions -fcxx-exceptions -frtti "\$@"
+$trace_check
+PS5_PAYLOAD_SDK=$sdk PS5_CLANG=$clang_cxx exec sh $kit/tooling/prospero-clang18 -I$here/ps5port/include -fexceptions -fcxx-exceptions -frtti \$trace "\$@"
 EOF
 chmod +x "$work/bin/ps5cc" "$work/bin/ps5cxx"
+trace_re=$( [[ -f $here/trace.list ]] && grep -v '^#' "$here/trace.list" | grep . | paste -sd'|' || true)
+old_re=$(cat "$work/trace-re" 2>/dev/null || true)
+if [[ $old_re != "$trace_re" ]]; then
+    # (the files that change state: their objects rebuilt)
+    for re in "$old_re" "$trace_re"; do
+        [[ -n $re ]] || continue
+        (cd "$here/upstream" 2>/dev/null && find . \( -name '*.c' -o -name '*.cpp' \) | grep -E "($re)\$" | sed 's/\.[a-z]*$/.o/' | xargs -r rm -f) || true
+    done
+    echo "$trace_re" > "$work/trace-re"
+fi
 
 # ---- 1. Amiberry's source
 up=$here/upstream
