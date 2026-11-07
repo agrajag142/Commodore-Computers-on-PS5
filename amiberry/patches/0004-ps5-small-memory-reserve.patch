@@ -1,5 +1,14 @@
 --- a/src/osdep/amiberry_mem.cpp	2026-11-07 13:30:20.167594015 +1030
-+++ b/src/osdep/amiberry_mem.cpp	2026-11-07 20:07:28.757532326 +1030
++++ b/src/osdep/amiberry_mem.cpp	2026-11-07 20:21:51.822680913 +1030
+@@ -352,7 +352,7 @@
+ #endif
+ 
+ 	if (natmem_reserved)
+-		VirtualFree (natmem_reserved, 0, MEM_RELEASE);
++		VirtualFree (natmem_reserved, natmem_reserved_size, MEM_RELEASE); // PS5 port: the size (munmap of 0 bytes frees nothing)
+ 
+ 	natmem_reserved = nullptr;
+ 	natmem_offset = nullptr;
 @@ -452,6 +452,12 @@
  	natmem_size = std::min<size_t>(natmem_size, 0xc0000000);
  #endif
