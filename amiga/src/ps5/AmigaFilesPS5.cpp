@@ -53,7 +53,12 @@ static std::vector<std::string> allNames() {
     fclose(f);
   }
   static const char *usual[] = {"kick.rom", "kick34005.A500", "kick13.rom", "amiga-os-130.rom", "rom.key",
-                                "default.adf", "df0.adf", "df1.adf", "disk1.adf", "disk2.adf"};
+                                "default.adf", "df0.adf", "df1.adf", "disk1.adf", "disk2.adf",
+                                // (the later Kickstarts: the usual names, Amiga Forever's among them)
+                                "kick20.rom", "kick204.rom", "kick205.rom", "kick31.rom", "kick37175.A500",
+                                "kick37350.A600", "kick40063.A600", "kick40068.A1200", "kick39106.A1200",
+                                "amiga-os-204.rom", "amiga-os-205.rom", "amiga-os-205-a600.rom", "amiga-os-300-a1200.rom",
+                                "amiga-os-310-a500.rom", "amiga-os-310-a600.rom", "amiga-os-310-a1200.rom"};
   for (const char *u : usual)
     if (exists(u)) add(u);
   DIR *d = opendir(folder().c_str());
@@ -140,6 +145,34 @@ std::string loadKickstart(uint8_t *rom) {
            crc == 0xC4F0F55F ? " (Kickstart 1.3 A500)" : "");
   printf("%s", msg);
   return "";
+}
+
+void forEachKickstart(void (*fn)(const char *name, const uint8_t *data, size_t len)) {
+  static const char *exts[] = {".rom", ".a500", ".a600", ".a1200", ".a4000", ".bin"};
+  for (auto &n : allNames()) {
+    bool rom = false;
+    for (const char *e : exts) rom |= endsWith(n, e);
+    if (!rom) continue;
+    size_t len = 0;
+    uint8_t *data = readFile(folder() + n, 0x80000 + 16, len);
+    if (!data) continue;
+    uint8_t *p = data;
+    if (len > 11 && memcmp(data, "AMIROMTYPE1", 11) == 0) {
+      p = data + 11;
+      len -= 11;
+      size_t keyLen = 0;
+      uint8_t *key = readFile(folder() + "rom.key", 4096, keyLen);
+      if (!key || !keyLen) {
+        heap_caps_free(data);
+        heap_caps_free(key);
+        continue;
+      }
+      for (size_t i = 0; i < len; i++) p[i] ^= key[i % keyLen];
+      heap_caps_free(key);
+    }
+    fn(n.c_str(), p, len);
+    heap_caps_free(data);
+  }
 }
 
 std::vector<std::string> listDisks() {

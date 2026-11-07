@@ -19,6 +19,9 @@ void ps5StartThread(void (*fn)(void *), void *arg, size_t stackBytes);
 namespace AmigaFiles {
 // Read the Kickstart into rom (256K). Returns "" or why it failed.
 std::string loadKickstart(uint8_t *rom);
+// Every Kickstart-looking file (.rom and the like), decrypted if it is
+// Amiga Forever's: fn(name, data, length) for each
+void forEachKickstart(void (*fn)(const char *name, const uint8_t *data, size_t len));
 // The .adf disks, sorted by name
 std::vector<std::string> listDisks();
 // Read a disk image (901120 bytes) into buf. Returns "" or why not.

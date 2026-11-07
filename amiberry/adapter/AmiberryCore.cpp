@@ -22,6 +22,9 @@
 #include "libretro.h"
 
 #include <atomic>
+#include <ctype.h>
+#include <utility>
+#include <vector>
 #include <pthread.h>
 #include <unistd.h>
 #include <errno.h>
@@ -289,9 +292,97 @@ static retro_disk_control_ext_callback diskExt{};
 static retro_disk_control_callback diskCb{};
 static bool haveDiskExt = false, haveDiskCb = false;
 
+// ------------------------------------------------------------ the models
+// Each with the Kickstart it needs, written into Amiberry's folder under
+// the name given here (from the front end's ROMs: amigaAddKickstart)
+struct Model {
+  const char *name, *kickName, *file;
+  bool have;
+};
+static Model models[] = {
+    {"A500", "1.3", "kick.rom", false},
+    {"A500+", "2.04", "kick204.rom", false},
+    {"A600", "2.05", "kick205.rom", false},
+    {"A1200", "3.1", "kick31.rom", false},
+};
+static const int kModels = sizeof(models) / sizeof(models[0]);
+static std::atomic<int> modelNow{0}, modelRequest{-1};
+
+static uint32_t crc32of(const uint8_t *d, size_t n) {
+  uint32_t c = 0xffffffff;
+  for (size_t i = 0; i < n; i++) {
+    c ^= d[i];
+    for (int k = 0; k < 8; k++) c = (c >> 1) ^ (0xedb88320 & (0 - (c & 1)));
+  }
+  return ~c;
+}
+
+void amigaAddKickstart(const char *name, const uint8_t *data, size_t len) {
+  std::vector<uint8_t> rom(data, data + len);
+  if (len == 524288 && !memcmp(rom.data(), rom.data() + 262144, 262144)) rom.resize(len = 262144);
+  if (len != 262144 && len != 524288) {
+    logLine("PS5: %s: not a Kickstart (%zu bytes)\n", name, len);
+    return;
+  }
+  if (rom[0] != 0x11 && rom[1] == 0x11) // (a byte-swapped dump)
+    for (size_t i = 0; i < len; i += 2) std::swap(rom[i], rom[i + 1]);
+  // (a Kickstart starts 1111 4EF9 (512K) or 1114 4EF9 (256K))
+  if (!(rom[0] == 0x11 && (rom[1] == 0x11 || rom[1] == 0x14) && rom[2] == 0x4e && rom[3] == 0xf9)) {
+    logLine("PS5: %s: not a Kickstart\n", name);
+    return;
+  }
+  int ver = rom[12] << 8 | rom[13], rev = rom[14] << 8 | rom[15];
+  uint32_t crc = crc32of(rom.data(), len);
+  std::string lower = name;
+  for (auto &c : lower) c = (char)tolower((unsigned char)c);
+  int m = -1;
+  if (ver == 34 || ver == 33) m = 0;
+  else if (len != 524288) m = -1; // (2.0 and later: 512K)
+  else if (ver == 37) m = rev <= 210 ? 1 : 2; // (37.175 the A500+'s 2.04; 37.299-37.350 the A600's 2.05)
+  else if (ver >= 39) {
+    bool a4000 = crc == 0xD6BAE334 || crc == 0x9E6AC152 || lower.find("4000") != std::string::npos;
+    bool a1200 = crc == 0x1483A091 || crc == 0x6C9B07D2 || lower.find("1200") != std::string::npos;
+    if (a1200) m = 3;
+    else if (!a4000 && !models[2].have) m = 2; // (3.x for the A500/A600/A2000: works in an A600)
+  }
+  if (m < 0) {
+    logLine("PS5: %s: Kickstart %d.%d (CRC %08X), not used\n", name, ver, rev, (unsigned)crc);
+    return;
+  }
+  mkdirs();
+  if (!writeFile(std::string(kSystemDir) + "/" + models[m].file, rom.data(), len)) return;
+  models[m].have = true;
+  logLine("PS5: %s: Kickstart %d.%d (CRC %08X) for the %s\n", name, ver, rev, (unsigned)crc, models[m].name);
+}
+
+int amigaModelCount() { return kModels; }
+const char *amigaModelName(int i) { return i >= 0 && i < kModels ? models[i].name : ""; }
+const char *amigaModelKickstart(int i) { return i >= 0 && i < kModels ? models[i].kickName : ""; }
+bool amigaModelAvailable(int i) { return i >= 0 && i < kModels && models[i].have; }
+int amigaModel() { return modelNow.load(); }
+void amigaSetModel(int i) {
+  if (amigaModelAvailable(i)) modelRequest.store(i);
+}
+bool amigaModelChanging() { return modelRequest.load() >= 0; }
+
+static void saveModel() {
+  std::string m = models[modelNow.load()].name;
+  writeFile(std::string(kSystemDir) + "/model.txt", (const uint8_t *)m.data(), m.size());
+}
+static void loadModel() {
+  FILE *f = fopen((std::string(kSystemDir) + "/model.txt").c_str(), "r");
+  if (!f) return;
+  char line[32] = {};
+  fgets(line, sizeof line, f);
+  fclose(f);
+  for (int i = 0; i < kModels; i++)
+    if (!strncmp(line, models[i].name, strlen(models[i].name)) && strlen(line) == strlen(models[i].name) && models[i].have)
+      modelNow.store(i);
+}
+
 static const char *optionValue(const char *key) {
-  if (!strcmp(key, "amiberry_model")) return "A500";
-  if (!strcmp(key, "amiberry_kickstart")) return "kick.rom";
+  if (!strcmp(key, "amiberry_model")) return models[modelNow.load()].name;
+  if (!strcmp(key, "amiberry_kickstart")) return models[modelNow.load()].file;
   if (!strcmp(key, "amiberry_audio_rate")) return "48000";
   if (!strcmp(key, "amiberry_port0_device")) return "mouse";
   if (!strcmp(key, "amiberry_port1_device")) return "joystick";
@@ -409,6 +500,7 @@ bool amigaCoreInit(uint8_t *chip, uint8_t *slow, uint8_t *rom, const AmigaOutput
     logLine("PS5: could not write kick.rom (%d)\n", errno);
     return false;
   }
+  if (kick) models[0].have = true;
   return true;
 }
 
@@ -455,6 +547,21 @@ static void *watchdog(void *) {
   return nullptr;
 }
 
+static std::string diskNow; // (the disk in DF0: now, for a restart)
+static void coreStart() {
+  logLine("PS5: retro_init (%s, Kickstart %s)...\n", models[modelNow.load()].name, models[modelNow.load()].file);
+  retro_init();
+  logLine("PS5: retro_init done\n");
+  retro_set_controller_port_device(0, RETRO_DEVICE_MOUSE);
+  retro_set_controller_port_device(1, RETRO_DEVICE_JOYPAD);
+  if (diskNow.empty()) diskNow = firstDisk;
+  retro_game_info info{};
+  info.path = diskNow.empty() ? nullptr : diskNow.c_str();
+  logLine("PS5: retro_load_game...\n");
+  loaded = retro_load_game(diskNow.empty() ? nullptr : &info);
+  logLine("PS5: retro_load_game(%s): %s\n", diskNow.empty() ? "no disk" : diskNow.c_str(), loaded ? "ok" : "FAILED");
+}
+
 // The emulator thread: one PAL frame
 void amigaRunFrame(AmigaFrameTimes *times) {
   int64_t t0 = amigaMicros ? amigaMicros() : 0;
@@ -475,16 +582,22 @@ void amigaRunFrame(AmigaFrameTimes *times) {
     pthread_create(&w, nullptr, watchdog, nullptr);
     // Amiberry's data folder (it looks for one before anything else)
     setenv("AMIBERRY_DATA_DIR", kSystemDir, 1);
-    logLine("PS5: retro_init...\n");
-    retro_init();
-    logLine("PS5: retro_init done\n");
-    retro_set_controller_port_device(0, RETRO_DEVICE_MOUSE);
-    retro_set_controller_port_device(1, RETRO_DEVICE_JOYPAD);
-    retro_game_info info{};
-    info.path = firstDisk.empty() ? nullptr : firstDisk.c_str();
-    logLine("PS5: retro_load_game...\n");
-    loaded = retro_load_game(firstDisk.empty() ? nullptr : &info);
-    logLine("PS5: retro_load_game(%s): %s\n", firstDisk.empty() ? "no disk" : firstDisk.c_str(), loaded ? "ok" : "FAILED");
+    loadModel();
+    for (int i = 0; i < kModels && !models[modelNow.load()].have; i++)
+      if (models[i].have) modelNow.store(i);
+    coreStart();
+  }
+  // Another model: Amiberry stopped and started again (its settings for
+  // the machine are read at the start), with the disk that was in
+  if (int m = modelRequest.exchange(-1); m >= 0) {
+    logLine("PS5: model %s: Amiberry stops...\n", models[m].name);
+    if (loaded) {
+      retro_unload_game();
+      retro_deinit();
+    }
+    modelNow.store(m);
+    saveModel();
+    coreStart();
   }
   if (!loaded) return;
   // the screen thread's requests
@@ -507,6 +620,7 @@ void amigaRunFrame(AmigaFrameTimes *times) {
     }
     if (--insertIn == 0) {
       insertDisk(pendingDiskPath);
+      diskNow = pendingDiskPath;
       diskRequest.store(0, std::memory_order_release);
     }
   }

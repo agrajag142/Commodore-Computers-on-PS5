@@ -36,6 +36,25 @@
 #include <string>
 #include <vector>
 
+#ifdef AMIBERRY
+// Amiberry's adapter: the models it can be, from the Kickstarts in the app
+void amigaAddKickstart(const char *name, const uint8_t *data, size_t len);
+int amigaModelCount();
+const char *amigaModelName(int i);
+const char *amigaModelKickstart(int i);
+bool amigaModelAvailable(int i);
+int amigaModel();
+void amigaSetModel(int i);
+static const char *modelLabel() { return amigaModelName(amigaModel()) + 1; } // (A1200: 1200)
+#else
+static const char *modelLabel() { return "500"; }
+#endif
+static const char *modelTitle() {
+  static char t[32];
+  snprintf(t, sizeof t, "Amiga %s on PS5", modelLabel());
+  return t;
+}
+
 int paula_ring_avail(void);
 uint8_t *drive_alloc_adf(void);
 void drive_mount_ready(void);
@@ -676,7 +695,7 @@ static void drawModPlayer() {
   frameRect(24, 24, kW - 48, kH - 48, 4, kWbWhite);
   fillRect(24, 24, kW - 48, 44, kWbWhite);
   text(44, 30, "MOD Player", 2, kWbBlue);
-  text(kW - 44 - textWidth("Amiga 500 on PS5", 2), 30, "Amiga 500 on PS5", 2, kWbBlue);
+  text(kW - 44 - textWidth(modelTitle(), 2), 30, modelTitle(), 2, kWbBlue);
 
   // ---- left: the folder and what is in it
   snprintf(line, sizeof(line), "/%.44s", modFolder.c_str());
@@ -1207,7 +1226,7 @@ static void drawOsk() {
 }
 
 // ============================================================ the menu
-enum ItemKind { IT_RESUME, IT_MOD, IT_OSK, IT_RESET, IT_VOLUME, IT_USBKBD, IT_QUIT, IT_HEADER, IT_DISK, IT_NONE };
+enum ItemKind { IT_RESUME, IT_MOD, IT_OSK, IT_RESET, IT_MODEL, IT_VOLUME, IT_USBKBD, IT_QUIT, IT_HEADER, IT_DISK, IT_NONE };
 struct Item {
   ItemKind kind;
   std::string name;
@@ -1217,6 +1236,7 @@ static bool menuOpen = false;
 static int menuSel = 0, menuTop = 0;
 static const int kMenuRows = 18;
 static bool quitArmed = false; // Quit chosen once: Cross again closes the app
+static int modelPick = 0;      // (the model shown in the menu: Cross switches to it)
 
 static void menuOpenNow() {
   items.clear();
@@ -1224,6 +1244,10 @@ static void menuOpenNow() {
   items.push_back({IT_MOD, ""});
   items.push_back({IT_OSK, ""});
   items.push_back({IT_RESET, ""});
+#ifdef AMIBERRY
+  items.push_back({IT_MODEL, ""});
+  modelPick = amigaModel();
+#endif
   items.push_back({IT_VOLUME, ""});
   items.push_back({IT_USBKBD, ""});
   items.push_back({IT_QUIT, ""});
@@ -1263,6 +1287,25 @@ static void menuInput() {
   if (menuSel <= 7) menuTop = 0;
   if (items[menuSel].kind != IT_QUIT) quitArmed = false;
   Item &it = items[menuSel];
+#ifdef AMIBERRY
+  if (it.kind == IT_MODEL && (repeating(left) || repeating(right))) {
+    // (the next model with its Kickstart in the app)
+    int step = (held & right) ? 1 : -1, n = amigaModelCount();
+    for (int k = 1; k <= n; k++) {
+      int m = ((modelPick + step * k) % n + n) % n;
+      if (amigaModelAvailable(m)) {
+        modelPick = m;
+        break;
+      }
+    }
+  }
+  if (it.kind == IT_MODEL && (pressed & RAW_CROSS) && modelPick != amigaModel()) {
+    amigaSetModel(modelPick);
+    snprintf(status, sizeof(status), "AMIGA %s", amigaModelName(modelPick) + 1);
+    menuOpen = false;
+    return;
+  }
+#endif
   if (it.kind == IT_VOLUME && (repeating(left) || repeating(right))) {
     int v = volumePct.load() + ((held & right) ? 10 : -10);
     volumePct.store(v < 0 ? 0 : v > 100 ? 100 : v);
@@ -1319,7 +1362,7 @@ static void drawMenu() {
   fillRect(x, y, w, h, kWbBlue);
   frameRect(x, y, w, h, 4, kWbWhite);
   fillRect(x, y, w, 40, kWbWhite);
-  text(x + 16, y + 4, "Amiga 500 on PS5", 2, kWbBlue);
+  text(x + 16, y + 4, modelTitle(), 2, kWbBlue);
   int tx = x + 32, ty = y + 56;
   int n = (int)items.size();
   for (int r = 0; r < kMenuRows && menuTop + r < n; r++) {
@@ -1334,6 +1377,16 @@ static void drawMenu() {
     case IT_QUIT: snprintf(line, sizeof(line), quitArmed ? "Quit? Press X again" : "Quit to the PS5 home screen"); break;
     case IT_RESET: snprintf(line, sizeof(line), "Reset (Ctrl-Amiga-Amiga)"); break;
     case IT_VOLUME: snprintf(line, sizeof(line), "Volume               %3d%%", volumePct.load()); break;
+#ifdef AMIBERRY
+    case IT_MODEL:
+      if (modelPick == amigaModel())
+        snprintf(line, sizeof(line), "Model   < %s, Kickstart %s >", amigaModelName(modelPick), amigaModelKickstart(modelPick));
+      else
+        snprintf(line, sizeof(line), "Model   < %s >   X: switch", amigaModelName(modelPick));
+      break;
+#else
+    case IT_MODEL: break;
+#endif
     case IT_USBKBD:
       snprintf(line, sizeof(line), "USB keyboard  %s", !usbKbWanted ? "off (the PS5 has it)" : !usbKb.isOpen() ? "  none found"
                                                         : usbKb.hasMouse() ? "+ mouse in use" : "      in use");
@@ -1375,7 +1428,7 @@ static void drawSides() {
   if (oskOpen) {
     // the keyboard's help: left the keys, right the mouse and the rest
     text(28, 40, "AMIGA", 4, kWbOrange);
-    text(28, 110, "500", 4, kWbWhite);
+    text(28, 110, modelLabel(), 4, kWbWhite);
     int x = 8, y = 300, step = 50;
     text(x + 20, y, "KEYBOARD", 2, kWbOrange);
     sideRow(x, y += step, ICON_CROSS, "D-PAD", "CHOOSE");
@@ -1399,7 +1452,7 @@ static void drawSides() {
   }
   // left: the name and the mouse; right: the joystick and the rest
   text(28, 40, "AMIGA", 4, kWbOrange);
-  text(28, 110, "500", 4, kWbWhite);
+  text(28, 110, modelLabel(), 4, kWbWhite);
   text(32, 180, "ON PS5", 2, kDim);
   int x = 8, y = 300, step = 50;
   text(x + 20, y, "MOUSE", 2, kWbOrange);
@@ -1484,6 +1537,13 @@ int main() {
   diskBuf = (uint8_t *)heap_caps_malloc(901120, 0);
   soundStart(); // (Paula's ring stays empty without a Kickstart: silence; the MOD player still plays)
   std::string err = AmigaFiles::loadKickstart(kickRom);
+  bool haveA500Kick = err.empty();
+#ifdef AMIBERRY
+  // every Kickstart in the app, for the models (Amiberry: 2.04, 2.05, 3.1 too)
+  AmigaFiles::forEachKickstart(amigaAddKickstart);
+  for (int m = 0; m < amigaModelCount(); m++)
+    if (amigaModelAvailable(m)) err.clear();
+#endif
   if (err.empty()) {
     // the disk at start-up: default.adf, else the first one
     disks = AmigaFiles::listDisks();
@@ -1503,7 +1563,7 @@ int main() {
     }
     AmigaOutput out = {picture, 640, 0, 0, nullptr};
     amigaMicros = [] { return (int64_t)ps5NowUs(); };
-    if (amigaCoreInit(chipRam, slowRam, kickRom, out)) {
+    if (amigaCoreInit(chipRam, slowRam, haveA500Kick ? kickRom : nullptr, out)) {
       ps5StartThread(emuThread, nullptr, 1024 * 1024);
       running = true;
     } else {
@@ -1515,6 +1575,15 @@ int main() {
   for (int64_t flip = 2;; ++flip) {
     sceVideoOutWaitVblank(video);
     padRead();
+#ifdef AMIBERRY
+    { // (another model running: its number at the side)
+      static std::string shownModel;
+      if (shownModel != modelLabel() && !modOpen) {
+        shownModel = modelLabel();
+        drawSides();
+      }
+    }
+#endif
     usbToAmiga = running && !menuOpen && !modOpen;
     usbKeyboardFrame();
     held = padHeld | (usbToAmiga ? (usbNav & RAW_OPTIONS) : usbNav);
