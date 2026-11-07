@@ -112,6 +112,30 @@ extern "C" [[noreturn]] void __wrap___cxa_throw(void *obj, std::type_info *type,
   __real___cxa_throw(obj, type, dtor);
 }
 
+// The ways out of the app, wrapped at the link: who called them, in the log
+extern "C" [[noreturn]] void __real_exit(int);
+extern "C" [[noreturn]] void __real__exit(int);
+extern "C" [[noreturn]] void __real_abort(void);
+static void logExit(const char *what, int code, void *from) {
+  if (!logFn) return;
+  char line[160];
+  snprintf(line, sizeof(line), "PS5: %s(%d) called from ref%+lld\n", what, code,
+           (long long)((uintptr_t)from - (uintptr_t)&ps5portDiagnostics));
+  logFn(line);
+}
+extern "C" [[noreturn]] void __wrap_exit(int code) {
+  logExit("exit", code, __builtin_return_address(0));
+  __real_exit(code);
+}
+extern "C" [[noreturn]] void __wrap__exit(int code) {
+  logExit("_exit", code, __builtin_return_address(0));
+  __real__exit(code);
+}
+extern "C" [[noreturn]] void __wrap_abort(void) {
+  logExit("abort", 0, __builtin_return_address(0));
+  __real_abort();
+}
+
 // 1: an exception thrown and caught here (the unwinder works)
 extern "C" int ps5portDiagnostics(void (*log)(const char *)) {
   logFn = log;
