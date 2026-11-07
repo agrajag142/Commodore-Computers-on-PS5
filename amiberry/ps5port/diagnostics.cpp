@@ -47,7 +47,8 @@ static void logAddresses(const char *what, int sig, ucontext_t *uc) {
   logFn("PS5: code addresses on the stack (ref+offset):");
   const uintptr_t *sp = (const uintptr_t *)rsp;
   int n = 0;
-  for (int i = 0; i < 2048 && n < 40; i++) {
+  // (only near the top of the stack: past its end the memory may not be there)
+  for (int i = 0; i < 48 && n < 24; i++) {
     uintptr_t v = sp[i];
     long long d = (long long)(v - ref);
     if (d > -(64ll << 20) && d < (64ll << 20)) {
@@ -59,7 +60,9 @@ static void logAddresses(const char *what, int sig, ucontext_t *uc) {
   logFn("\n");
 }
 
+static volatile int crashing = 0;
 static void onCrash(int sig, siginfo_t *info, void *ctx) {
+  if (crashing++) _exit(2); // (a crash while reporting one)
   char line[96];
   snprintf(line, sizeof(line), "PS5: crash: fault address %p\n", info ? info->si_addr : nullptr);
   if (logFn) logFn(line);
