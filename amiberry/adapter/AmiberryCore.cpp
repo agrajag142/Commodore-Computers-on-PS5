@@ -22,6 +22,8 @@
 #include "libretro.h"
 
 #include <atomic>
+#include <pthread.h>
+#include <unistd.h>
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -31,6 +33,8 @@
 
 int64_t (*amigaMicros)() = nullptr;
 extern "C" int ps5portDiagnostics(void (*log)(const char *)); // (ps5port/diagnostics.cpp)
+extern "C" void ps5portWatch(void);
+extern "C" void ps5portPoke(pthread_t t);
 
 // ------------------------------------------------------------ where files go
 static const char *kSystemDir = "/download0/amiberry"; // the app's own storage (writable)
@@ -401,6 +405,25 @@ static void insertDisk(const std::string &path) {
   }
 }
 
+// The watchdog: a frame that takes over 5 seconds - where the emulator
+// thread is, every 5 seconds (up to 6 times)
+static pthread_t emuThread;
+static std::atomic<int> framesDone{0};
+static void *watchdog(void *) {
+  int last = -1, pokes = 0;
+  while (pokes < 6) {
+    sleep(5);
+    int f = framesDone.load();
+    if (f == last && !paused.load()) {
+      logLine("PS5: no frame for 5 seconds (at frame %d)\n", f);
+      ps5portPoke(emuThread);
+      pokes++;
+    }
+    last = f;
+  }
+  return nullptr;
+}
+
 // The emulator thread: one PAL frame
 void amigaRunFrame(AmigaFrameTimes *times) {
   int64_t t0 = amigaMicros ? amigaMicros() : 0;
@@ -413,6 +436,11 @@ void amigaRunFrame(AmigaFrameTimes *times) {
     retro_set_input_poll(inputPoll);
     retro_set_input_state(inputState);
     ps5portDiagnostics([](const char *s) { logLine("%s", s); });
+    // a crash or a hang in the emulator: where, into the log
+    ps5portWatch();
+    emuThread = pthread_self();
+    pthread_t w;
+    pthread_create(&w, nullptr, watchdog, nullptr);
     // Amiberry's data folder (it looks for one before anything else)
     setenv("AMIBERRY_DATA_DIR", kSystemDir, 1);
     logLine("PS5: retro_init...\n");
@@ -446,6 +474,7 @@ void amigaRunFrame(AmigaFrameTimes *times) {
   frameDX = mouseDX.exchange(0, std::memory_order_relaxed);
   frameDY = mouseDY.exchange(0, std::memory_order_relaxed);
   retro_run();
+  framesDone++;
   if (times) {
     memset(times, 0, sizeof(*times));
     times->totalUs = times->cpuUs = (uint32_t)((amigaMicros ? amigaMicros() : 0) - t0);
