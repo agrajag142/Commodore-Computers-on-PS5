@@ -1,0 +1,15 @@
+--- a/src/osdep/amiberry_mem.cpp	2026-11-07 13:30:20.167594015 +1030
++++ b/src/osdep/amiberry_mem.cpp	2026-11-07 20:07:28.757532326 +1030
+@@ -452,6 +452,12 @@
+ 	natmem_size = std::min<size_t>(natmem_size, 0xc0000000);
+ #endif
+ 
++#if defined(__PROSPERO__) || defined(__FreeBSD__)
++	// PS5: an app has about 347 MB in all and a reservation counts against
++	// it: 64 MB covers the 24-bit Amiga (A500-A1200, Z2 RAM) and leaves room
++	// for the rest (thread stacks among them)
++	natmem_size = std::min<size_t>(natmem_size, 64 * 1024 * 1024);
++#endif
+ 	write_log (_T("MMAN: Total physical RAM %llu MB, all RAM %llu MB\n"),
+ 	           totalphys64 >> 20, total64 >> 20);
+ 	write_log(_T("MMAN: Attempting to reserve: %zu MB\n"), natmem_size >> 20);
