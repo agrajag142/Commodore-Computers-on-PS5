@@ -3,7 +3,7 @@
 # Amiga 500 app): the same front end (amiga/src/ps5), the emulator swapped
 # for Amiberry's libretro core through amiberry/adapter/AmiberryCore.cpp.
 #
-#   amiberry/build.sh                 -> build/amiberry/PPSA99906/ and PPSA99906.zip
+#   amiberry/build.sh                 -> build/amiberry/PPSA99905/ and PPSA99905.zip (the Amiga app)
 #   amiberry/build.sh deploy <PS5 IP> -> also copies it to /data/homebrew over FTP
 #
 # Steps:

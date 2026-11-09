@@ -3,7 +3,8 @@
 The Amiga 500 emulator from the Waveshare ESP32-P4 sketch (`WaveshareP4_C64Amiga_003`: Massitux's
 [amiga500-esp32](https://github.com/massitux/amiga500-esp32) with Musashi's 68000, and the board
 port's work on the picture, copper, blitter and sound) as a PS5 home-screen app, built like the C64
-one. Title ID `PPSA99905`, beside the C64 (`PPSA99904`).
+one. Its front end (`src/ps5`) is also the Amiga app's, which runs [Amiberry](../amiberry/README.md)
+behind it as `PPSA99905`; this one, with the board's core, is now the classic core, `PPSA99907`.
 
 ## What you need
 
@@ -23,14 +24,14 @@ As for the C64 (the starter's `tools/setup.sh` first):
 ```bash
 chmod +x amiga/build.sh
 cp /path/to/kick.rom /path/to/*.adf amiga/assets/amiga/
-PS5_STARTER=~/ps5-homebrew-starter amiga/build.sh             # build/amiga/PPSA99905 and its ZIP
+PS5_STARTER=~/ps5-homebrew-starter amiga/build.sh             # build/amiga/PPSA99907 and its ZIP
 PS5_STARTER=~/ps5-homebrew-starter amiga/build.sh deploy <PS5 IP>   # or build and copy it over FTP
 ```
 
-Then copy the `PPSA99905` folder into `/data/homebrew` (so that
-`/data/homebrew/PPSA99905/sce_sys/param.json` exists): ShadowMountPlus installs it.
+Then copy the `PPSA99907` folder into `/data/homebrew` (so that
+`/data/homebrew/PPSA99907/sce_sys/param.json` exists): ShadowMountPlus installs it.
 
-**Adding files later, over FTP:** copy them into `/data/homebrew/PPSA99905/assets/amiga`. These
+**Adding files later, over FTP:** copy them into `/data/homebrew/PPSA99907/assets/amiga`. These
 names are found as they are: `kick.rom`, `kick34005.A500`, `kick13.rom`, `amiga-os-130.rom`,
 `rom.key`, `default.adf`, `df0.adf`, `df1.adf`, `disk1.adf`, `disk2.adf`. Any other name needs a
 line in `files.txt` there (the PS5 won't let the app list the folder).
@@ -128,7 +129,7 @@ the music (its channels' levels and notes, every new note, and the sound itself)
 The song controls (pause, L1/R1, L2/R2) work there too. The visuals are `common/Visuals.h`, shared by
 both apps.
 
-**Modules added later over FTP:** copy them into `/data/homebrew/PPSA99905/assets/amiga/mods`, run
+**Modules added later over FTP:** copy them into `/data/homebrew/PPSA99907/assets/amiga/mods`, run
 `python3 tools/make_music_list.py` on a copy of that folder on your PC, and copy the new
 `music.txt` there too (the PS5 won't let the app list a folder).
 

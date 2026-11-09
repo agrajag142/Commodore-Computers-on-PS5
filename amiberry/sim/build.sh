@@ -8,7 +8,7 @@
 #   amiberry/sim/build.sh   -> amiberry/sim/out/amiberrysim
 #
 # SIM_SANDBOX=1 makes folder listing fail as on the PS5. The app writes to
-# /download0/amiberry and /data/homebrew/PPSA99906, as on the PS5.
+# /download0/amiberry and /data/homebrew/PPSA99905, as on the PS5.
 set -euo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo=$(cd "$here/../.." && pwd)

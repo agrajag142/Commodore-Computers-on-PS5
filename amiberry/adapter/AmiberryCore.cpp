@@ -39,10 +39,13 @@ int64_t (*amigaMicros)() = nullptr;
 extern "C" int ps5portDiagnostics(void (*log)(const char *)); // (ps5port/diagnostics.cpp)
 extern "C" void ps5portWatch(void);
 extern "C" void ps5portSelfTest(void);
+extern "C" void ps5portLogMemory(int on);
 extern "C" void ps5portPoke(pthread_t t);
 extern "C" void ps5portTrace(int on); // (functions entered, into the log: frame 2, where the PS5 build dies)
 
 // ------------------------------------------------------------ where files go
+// The app's title ID (sce_sys/param.json): its folder under /data/homebrew
+#define kTitleId "PPSA99905"
 static const char *kSystemDir = "/download0/amiberry"; // the app's own storage (writable)
 
 static void mkdirs() {
@@ -65,7 +68,7 @@ static int logFd = -2;
 static void logWrite(const char *s, size_t n) {
   if (logFd == -2) {
     // beside the app, where FTP reaches it; else the app's own storage
-    logFd = open("/data/homebrew/PPSA99906/amiberry.log", O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    logFd = open("/data/homebrew/" kTitleId "/amiberry.log", O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (logFd < 0) {
       mkdirs();
       logFd = open("/download0/amiberry/amiberry.log", O_WRONLY | O_CREAT | O_TRUNC, 0666);
@@ -93,6 +96,10 @@ static void RETRO_CALLCONV coreLog(enum retro_log_level level, const char *fmt, 
   va_end(a);
 }
 
+// The debugging aids from the port: every call from the core in the first
+// frames, the lights, frame counts, the self-test and the frame-2 trace,
+// into the log. Off: the log has what went wrong (and the start-up).
+static const bool kDebug = false;
 static int traceFrames = 0; // (the first frames: every call from the core, into the log)
 
 // ------------------------------------------------------------ the picture
@@ -100,7 +107,7 @@ static AmigaOutput out{};
 static std::atomic<bool> showPicture{true};
 
 static void RETRO_CALLCONV videoRefresh(const void *data, unsigned w, unsigned h, size_t pitch) {
-  if (traceFrames < 4) logLine("PS5: video %p %ux%u\n", data, w, h);
+  if (kDebug && traceFrames < 4) logLine("PS5: video %p %ux%u\n", data, w, h);
   if (!data || !out.fb || !showPicture.load(std::memory_order_relaxed)) return;
   // Into 640 x 512: a low-resolution picture (320 wide) is doubled across,
   // a single-line one (up to 300 high) down; anything bigger is cropped round
@@ -141,7 +148,7 @@ static int16_t ring[kRing * 2];
 static std::atomic<unsigned> ringHead{0}, ringTail{0};
 
 static size_t RETRO_CALLCONV audioBatch(const int16_t *data, size_t frames) {
-  if (traceFrames < 4) logLine("PS5: audio %zu\n", frames);
+  if (kDebug && traceFrames < 4) logLine("PS5: audio %zu\n", frames);
   unsigned h = ringHead.load(std::memory_order_relaxed);
   unsigned t = ringTail.load(std::memory_order_acquire);
   for (size_t i = 0; i < frames; i++) {
@@ -203,7 +210,7 @@ static int frameDX, frameDY;
 static void RETRO_CALLCONV inputPoll(void) {}
 static int16_t RETRO_CALLCONV inputState(unsigned port, unsigned device, unsigned index, unsigned id) {
   (void)index;
-  if (traceFrames < 4) logLine("PS5: input %u %u %u\n", port, device, id);
+  if (kDebug && traceFrames < 4) logLine("PS5: input %u %u %u\n", port, device, id);
   if (device == RETRO_DEVICE_MOUSE && port == 0) {
     switch (id) {
     case RETRO_DEVICE_ID_MOUSE_X: return (int16_t)frameDX;
@@ -280,7 +287,7 @@ static std::atomic<int> hdLightOn{0}, hdLightUntil{0}, hdLightFrame{0};
 static void RETRO_CALLCONV setLed(int led, int state) {
   // (Amiberry's: 0 power, 1 any drive, 2 hard drive/CD, 3 DF0:)
   static int logged;
-  if (logged < 40) {
+  if (kDebug && logged < 40) {
     logged++;
     logLine("PS5: LED %d %d\n", led, state);
   }
@@ -386,7 +393,7 @@ static std::atomic<bool> hdRequest{false};
 static std::string writablePath(const std::string &p) {
   static const char *app0 = "/app0/";
   if (p.compare(0, strlen(app0), app0)) return p;
-  std::string alt = "/data/homebrew/PPSA99906/" + p.substr(strlen(app0));
+  std::string alt = std::string("/data/homebrew/") + kTitleId + "/" + p.substr(strlen(app0));
   struct stat st;
   return stat(alt.c_str(), &st) == 0 ? alt : p;
 }
@@ -465,7 +472,7 @@ static const char *optionValue(const char *key) {
 }
 
 static bool RETRO_CALLCONV environment(unsigned cmd, void *data) {
-  if (traceFrames < 4) logLine("PS5: env %u\n", cmd & ~RETRO_ENVIRONMENT_EXPERIMENTAL);
+  if (kDebug && traceFrames < 4) logLine("PS5: env %u\n", cmd & ~RETRO_ENVIRONMENT_EXPERIMENTAL);
   switch (cmd & ~RETRO_ENVIRONMENT_EXPERIMENTAL) {
   case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY:
   case RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY:
@@ -607,7 +614,7 @@ static void *watchdog(void *) {
   while (pokes < 6) {
     sleep(5);
     int f = framesDone.load();
-    logLine("PS5: watchdog: %d frames\n", f);
+    if (kDebug) logLine("PS5: watchdog: %d frames\n", f);
     if (f == last && !paused.load()) {
       logLine("PS5: no frame for 5 seconds (at frame %d)\n", f);
       ps5portPoke(emuThread);
@@ -653,7 +660,8 @@ void amigaRunFrame(AmigaFrameTimes *times) {
     ps5portDiagnostics([](const char *s) { logLine("%s", s); });
     // a crash or a hang in the emulator: where, into the log
     ps5portWatch();
-    ps5portSelfTest();
+    ps5portLogMemory(kDebug);
+    if (kDebug) ps5portSelfTest();
     emuThread = pthread_self();
     pthread_t w;
     pthread_create(&w, nullptr, watchdog, nullptr);
@@ -723,14 +731,14 @@ void amigaRunFrame(AmigaFrameTimes *times) {
     hdFrames = -1;
   }
   static int frames;
-  if (frames < 10 || frames % 500 == 0) logLine("PS5: frame %d\n", frames);
+  if (kDebug && (frames < 10 || frames % 500 == 0)) logLine("PS5: frame %d\n", frames);
   frames++;
   frameDX = mouseDX.exchange(0, std::memory_order_relaxed);
   frameDY = mouseDY.exchange(0, std::memory_order_relaxed);
-  if (traceFrames == 1) ps5portTrace(1);
+  if (kDebug && traceFrames == 1) ps5portTrace(1);
   retro_run();
-  if (traceFrames == 1) ps5portTrace(0);
-  if (traceFrames < 4) logLine("PS5: retro_run returned\n");
+  if (kDebug && traceFrames == 1) ps5portTrace(0);
+  if (kDebug && traceFrames < 4) logLine("PS5: retro_run returned\n");
   traceFrames++;
   framesDone++;
   if (times) {

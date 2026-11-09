@@ -103,6 +103,12 @@ static void onCrash(int sig, siginfo_t *info, void *ctx) {
   char line[96];
   snprintf(line, sizeof(line), "PS5: crash: fault address %p\n", info ? info->si_addr : nullptr);
   if (logFn) logFn(line);
+  if (ctx) { // (the PS5 keeps the instruction pointer in context word 28: the self-test found it)
+    uintptr_t pc = ((const uintptr_t *)ctx)[28];
+    snprintf(line, sizeof(line), "PS5: crash: at ref%+lld (%p)\n", (long long)(pc - (uintptr_t)&ps5portDiagnostics),
+             (void *)pc);
+    if (logFn) logFn(line);
+  }
   dumpContext(ctx);
   (void)sig;
   _exit(1);
@@ -224,12 +230,16 @@ extern "C" void *__real_mmap(void *, size_t, int, int, int, off_t);
 extern "C" int __real_munmap(void *, size_t);
 extern "C" int __real_mprotect(void *, size_t, int);
 extern "C" int __real_madvise(void *, size_t, int);
+static bool memLog = false; // (ps5portLogMemory: the adapter's kDebug)
+extern "C" void ps5portLogMemory(int on) { memLog = on; }
 static void logMem(const char *what, void *addr, size_t len, int a, int b, long r, void *from) {
-  if (!logFn) return;
+  if (!logFn || !memLog) return;
+  int keep = errno;
   char line[200];
   snprintf(line, sizeof(line), "PS5: %s(%p, 0x%zx, %d, 0x%x) = %lx (errno %d) from ref%+lld\n", what, addr, len, a, b, r,
-           errno, (long long)((uintptr_t)from - (uintptr_t)&ps5portDiagnostics));
+           keep, (long long)((uintptr_t)from - (uintptr_t)&ps5portDiagnostics));
   logFn(line);
+  errno = keep;
 }
 extern "C" void *__wrap_mmap(void *addr, size_t len, int prot, int flags, int fd, off_t off) {
   void *from = __builtin_return_address(0);

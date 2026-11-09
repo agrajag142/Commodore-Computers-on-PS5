@@ -3,7 +3,7 @@
 # starter's kit and SDK (as c64/build.sh; run the starter's tools/setup.sh
 # once first).
 #
-#   amiga/build.sh                    -> build/amiga/PPSA99905/ and PPSA99905.zip
+#   amiga/build.sh                    -> build/amiga/PPSA99907/ and PPSA99907.zip (the classic core)
 #   amiga/build.sh deploy <PS5 IP>    -> also copies it to /data/homebrew over FTP
 #
 # Where the starter is: PS5_STARTER=/path/to/ps5-homebrew-starter, or a
